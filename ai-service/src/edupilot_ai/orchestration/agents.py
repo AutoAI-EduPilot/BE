@@ -91,7 +91,7 @@ class AgentResult:
     agent: str
     message: Message | None
     state_patch: dict[str, Any]
-    usage: LlmUsage
+    usage: LlmUsage | None
     quiz: QuizGeneration | None = None
     memory_candidates: list[dict[str, Any]] = field(default_factory=list)
     ui_actions: list[dict[str, Any]] = field(default_factory=list)

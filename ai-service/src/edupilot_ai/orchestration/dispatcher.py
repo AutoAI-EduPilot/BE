@@ -154,7 +154,8 @@ class ToolDispatcher:
                     result.quiz = outcome.quiz
                 self._record_note_result(result, outcome)
                 self._record_memory_result(result, action, outcome)
-                result.usages.append(outcome.usage)
+                if outcome.usage is not None:
+                    result.usages.append(outcome.usage)
                 logger.info(
                     "tool action completed",
                     extra={
@@ -271,7 +272,8 @@ class ToolDispatcher:
                     result.quiz = outcome.quiz
                 self._record_note_result(result, outcome)
                 self._record_memory_result(result, action, outcome)
-                result.usages.append(outcome.usage)
+                if outcome.usage is not None:
+                    result.usages.append(outcome.usage)
                 logger.info(
                     "tool action completed",
                     extra={
@@ -376,7 +378,7 @@ class ToolDispatcher:
                 agent="LearnerMemoryService",
                 message=None,
                 state_patch={},
-                usage=LlmUsage(self._model, 0, 0, None),
+                usage=None,
                 memory_candidates=[candidate],
             )
         if action.tool is ToolName.PROMOTE_MEMORY:
@@ -384,14 +386,14 @@ class ToolDispatcher:
                 agent="LearnerMemoryService",
                 message=None,
                 state_patch={},
-                usage=LlmUsage(self._model, 0, 0, None),
+                usage=None,
             )
         if action.tool is ToolName.PROMPT_BINARY_DECISION:
             return AgentResult(
                 agent="UiActionResolver",
                 message=None,
                 state_patch={},
-                usage=LlmUsage(self._model, 0, 0, None),
+                usage=None,
                 ui_actions=[
                     {
                         "type": "BINARY_DECISION",

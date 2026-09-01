@@ -145,11 +145,14 @@ async def test_explain_ndjson_golden_sequence_and_content_invariant(
     context = payload["context"]
     assert isinstance(context, dict)
     context["xaiFileId"] = "file-explain-stream"
-    fake_llm.queue(make_explain_plan(propose_quiz=True))
+    fake_llm.queue_completion(
+        make_explain_plan(propose_quiz=True),
+        LlmUsage("grok-4.5-live", 4, 2, 7),
+    )
     fake_llm.queue_text_stream(
         "편차는 ",
         "**평균과 관측값의 차이**입니다.",
-        usage=LlmUsage("grok-4.5", 12, 8, 2),
+        usage=LlmUsage("grok-4.5-live", 12, 8, 2),
     )
 
     response = await client.post(
@@ -192,8 +195,10 @@ async def test_explain_ndjson_golden_sequence_and_content_invariant(
         }
     ]
     assert completed.usage is not None
-    assert completed.usage.input_tokens == 12
-    assert completed.usage.output_tokens == 8
+    assert completed.usage.model == "grok-4.5-live"
+    assert completed.usage.input_tokens == 16
+    assert completed.usage.output_tokens == 10
+    assert completed.usage.reasoning_tokens == 9
     assert len(fake_llm.calls) == 1
     assert len(fake_llm.stream_calls) == 1
     assert 0 < fake_llm.stream_calls[0][2] <= 180
