@@ -1,20 +1,30 @@
 """NDJSON turn stream contract and timeout budget tests."""
 
 import asyncio
+import gc
 import json
+import logging
 import time
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from copy import deepcopy
+from typing import Any
 
 import httpx
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+from starlette.types import Message as AsgiMessage
+from starlette.types import Scope
 
 from edupilot_ai.api.deps import get_turn_service
+from edupilot_ai.api.turn import execute_turn
 from edupilot_ai.core.errors import ErrorCategory
 from edupilot_ai.llm.bridge import (
     LlmBridgeError,
     LlmCompletion,
     LlmFileAttachment,
+    LlmTextDelta,
+    LlmTextStreamItem,
     LlmUsage,
     ModelT,
 )
@@ -73,6 +83,28 @@ class SlowFakeLlm(FakeLlm):
             timeout_seconds=timeout_seconds,
             attachments=attachments,
         )
+
+
+class DisconnectAwareFakeLlm(FakeLlm):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_closed = asyncio.Event()
+
+    async def complete_text_stream(
+        self,
+        *,
+        messages: Sequence[Mapping[str, str]],
+        profile: AgentLlmProfile,
+        timeout_seconds: float,
+        attachments: Sequence[LlmFileAttachment] = (),
+    ) -> AsyncIterator[LlmTextStreamItem]:
+        self.stream_calls.append((messages, profile, timeout_seconds))
+        self.stream_file_attachments.append(tuple(attachments))
+        try:
+            yield LlmTextDelta(text="첫 델타")
+            await asyncio.Event().wait()
+        finally:
+            self.stream_closed.set()
 
 
 def make_plan(tool: ToolName, args: dict[str, object], goal: str) -> TurnPlan:
@@ -136,6 +168,7 @@ async def test_explain_ndjson_golden_sequence_and_content_invariant(
     fake_llm: FakeLlm,
     auth_headers: dict[str, str],
     turn_payload: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     payload = deepcopy(turn_payload)
     payload["event"] = {
@@ -155,11 +188,17 @@ async def test_explain_ndjson_golden_sequence_and_content_invariant(
         usage=LlmUsage("grok-4.5-live", 12, 8, 2),
     )
 
-    response = await client.post(
-        "/internal/ai/turn",
-        json=payload,
-        headers={**auth_headers, "Accept": "application/x-ndjson"},
-    )
+    turn_logger = logging.getLogger("edupilot_ai.api.turn")
+    caplog.set_level(logging.INFO, logger=turn_logger.name)
+    turn_logger.addHandler(caplog.handler)
+    try:
+        response = await client.post(
+            "/internal/ai/turn",
+            json=payload,
+            headers={**auth_headers, "Accept": "application/x-ndjson"},
+        )
+    finally:
+        turn_logger.removeHandler(caplog.handler)
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
@@ -207,6 +246,11 @@ async def test_explain_ndjson_golden_sequence_and_content_invariant(
     assert "모든 학습자 대상 텍스트" in stream_system_prompt
     assert [item.file_id for item in fake_llm.stream_file_attachments[0]] == ["file-explain-stream"]
     assert [item.file_id for item in fake_llm.file_attachments[0]] == ["file-explain-stream"]
+    completed_log = next(
+        record for record in caplog.records if record.message == "turn stream completed"
+    )
+    assert completed_log.levelno == logging.INFO
+    assert completed_log.__dict__["status"] == "SUCCESS"
 
 
 async def test_explain_empty_page_streams_fixed_guidance_without_agent_llm(
@@ -291,6 +335,7 @@ async def test_stream_error_is_terminal_and_excludes_completed(
     fake_llm: FakeLlm,
     auth_headers: dict[str, str],
     turn_payload: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     fake_llm.queue(
         make_plan(
@@ -304,11 +349,17 @@ async def test_stream_error_is_terminal_and_excludes_completed(
         LlmBridgeError(category=ErrorCategory.TIMEOUT, retryable=True),
     )
 
-    response = await client.post(
-        "/internal/ai/turn",
-        json=turn_payload,
-        headers={**auth_headers, "Accept": "application/x-ndjson"},
-    )
+    turn_logger = logging.getLogger("edupilot_ai.api.turn")
+    caplog.set_level(logging.INFO, logger=turn_logger.name)
+    turn_logger.addHandler(caplog.handler)
+    try:
+        response = await client.post(
+            "/internal/ai/turn",
+            json=turn_payload,
+            headers={**auth_headers, "Accept": "application/x-ndjson"},
+        )
+    finally:
+        turn_logger.removeHandler(caplog.handler)
 
     events = parse_events(response)
     assert events[-1] == {
@@ -320,6 +371,10 @@ async def test_stream_error_is_terminal_and_excludes_completed(
     }
     assert sum(event["type"] == "error" for event in events) == 1
     assert all(event["type"] != "completed" for event in events)
+    failed_log = next(record for record in caplog.records if record.message == "turn stream failed")
+    assert failed_log.levelno == logging.WARNING
+    assert failed_log.__dict__["status"] == "FAILED"
+    assert failed_log.__dict__["errorCode"] == "AI_SERVICE_TIMEOUT"
 
 
 async def test_expired_turn_budget_stops_before_agent_call(
@@ -387,6 +442,152 @@ async def test_first_event_timeout_returns_one_terminal_error() -> None:
     terminal = events[0]
     assert isinstance(terminal, ErrorStreamEvent)
     assert terminal.category is ErrorCategory.TIMEOUT
+
+
+async def test_heartbeat_close_retrieves_completed_pending_failure() -> None:
+    release_failure = asyncio.Event()
+    source_closed = asyncio.Event()
+    loop_errors: list[dict[str, Any]] = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    async def failing_events() -> AsyncGenerator[TurnStreamEvent]:
+        yield StatusStreamEvent(stage="PLANNING")
+        try:
+            await release_failure.wait()
+            raise RuntimeError("pending source failed")
+        finally:
+            source_closed.set()
+
+    def collect_loop_error(
+        _loop: asyncio.AbstractEventLoop,
+        context: dict[str, Any],
+    ) -> None:
+        loop_errors.append(context)
+
+    stream = events_with_heartbeat(
+        failing_events(),
+        first_event_timeout_seconds=0.01,
+        heartbeat_interval_seconds=0.005,
+    )
+    loop.set_exception_handler(collect_loop_error)
+    try:
+        assert (await anext(stream)).type == "status"
+        assert (await anext(stream)).type == "heartbeat"
+        release_failure.set()
+        await asyncio.wait_for(source_closed.wait(), timeout=1)
+        await asyncio.sleep(0)
+
+        await stream.aclose()
+        del stream
+        gc.collect()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert loop_errors == []
+
+
+async def test_client_disconnect_closes_turn_and_llm_streams_without_task_errors(
+    caplog: pytest.LogCaptureFixture,
+    settings: Settings,
+    turn_payload: dict[str, object],
+) -> None:
+    disconnecting_llm = DisconnectAwareFakeLlm()
+    service = make_service(
+        disconnecting_llm,
+        settings,
+        heartbeat_interval_seconds=0.005,
+    )
+    payload = deepcopy(turn_payload)
+    payload["event"] = {
+        "eventType": "EXPLAIN_CURRENT_PAGE",
+        "payload": {"detailLevel": "NORMAL"},
+    }
+    turn = TurnRequest.model_validate(payload)
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/internal/ai/turn",
+        "raw_path": b"/internal/ai/turn",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"accept", b"application/x-ndjson")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    }
+    response = await execute_turn(Request(scope), turn, service)
+    assert isinstance(response, StreamingResponse)
+
+    disconnect = asyncio.Event()
+    received_events: list[dict[str, object]] = []
+    loop_errors: list[dict[str, Any]] = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    async def receive() -> AsgiMessage:
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: AsgiMessage) -> None:
+        if message["type"] != "http.response.body":
+            return
+        body = bytes(message.get("body", b""))
+        if not body:
+            return
+        event = json.loads(body)
+        received_events.append(event)
+        if event.get("type") == "heartbeat":
+            disconnect.set()
+            await asyncio.sleep(0)
+
+    def collect_loop_error(
+        _loop: asyncio.AbstractEventLoop,
+        context: dict[str, Any],
+    ) -> None:
+        loop_errors.append(context)
+
+    loop.set_exception_handler(collect_loop_error)
+    try:
+        with caplog.at_level(logging.INFO, logger="edupilot_ai.api.turn"):
+            async with asyncio.timeout(2):
+                await response(scope, receive, send)
+        closed_on_return = disconnecting_llm.stream_closed.is_set()
+        del response
+        gc.collect()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert any(event["type"] == "content_delta" for event in received_events)
+    assert any(event["type"] == "heartbeat" for event in received_events)
+    assert closed_on_return
+    assert loop_errors == []
+    cancelled_logs = [
+        record
+        for record in caplog.records
+        if record.name == "edupilot_ai.api.turn"
+        and record.message == "turn stream cancelled by client"
+    ]
+    assert len(cancelled_logs) == 1
+    assert cancelled_logs[0].levelno == logging.INFO
+    assert cancelled_logs[0].__dict__["status"] == "CANCELLED"
+    assert cancelled_logs[0].__dict__["turnId"] == turn.turn_id
+    assert not any(
+        record.levelno >= logging.ERROR
+        for record in caplog.records
+        if record.name == "edupilot_ai.api.turn"
+    )
+    assert not any(
+        record.message in {"turn stream completed", "turn stream failed unexpectedly"}
+        for record in caplog.records
+        if record.name == "edupilot_ai.api.turn"
+    )
 
 
 async def test_accept_omitted_keeps_json_path(
