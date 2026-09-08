@@ -5,13 +5,14 @@ import codecs
 import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from time import perf_counter
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
+from edupilot_ai.core.async_iterators import closing_async_iterator, shielded_aclose
 from edupilot_ai.core.errors import ErrorCategory
 from edupilot_ai.llm.bridge import (
     LlmBridgeError,
@@ -33,6 +34,16 @@ _MAX_NETWORK_ATTEMPTS = 3
 _RETRYABLE_NETWORK_ERRORS = (httpx.NetworkError, httpx.RemoteProtocolError)
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _shielded_response_stack() -> AsyncIterator[AsyncExitStack]:
+    """Close provider responses even when their consuming task is cancelled."""
+    stack = AsyncExitStack()
+    try:
+        yield stack
+    finally:
+        await shielded_aclose(stack)
 
 
 def _log_call(
@@ -445,13 +456,15 @@ class XaiLlmBridge:
         attachments: Sequence[LlmFileAttachment] = (),
     ) -> AsyncIterator[LlmTextStreamItem]:
         if attachments:
-            async for item in self._complete_text_stream_with_files(
+            stream = self._complete_text_stream_with_files(
                 messages=messages,
                 profile=profile,
                 timeout_seconds=timeout_seconds,
                 attachments=attachments,
-            ):
-                yield item
+            )
+            async with closing_async_iterator(stream):
+                async for item in stream:
+                    yield item
             return
         started_at = perf_counter()
         if timeout_seconds <= 0:
@@ -495,7 +508,7 @@ class XaiLlmBridge:
             response_body_started = False
             response: httpx.Response | None = None
             try:
-                async with AsyncExitStack() as response_stack:
+                async with _shielded_response_stack() as response_stack:
                     async with asyncio.timeout_at(deadline):
                         response = await response_stack.enter_async_context(
                             self._client.stream(
@@ -530,6 +543,7 @@ class XaiLlmBridge:
                         response,
                         on_body_chunk=mark_response_body_started,
                     ).__aiter__()
+                    response_stack.push_async_callback(shielded_aclose, sse_events)
                     while True:
                         try:
                             # Scope the deadline to provider I/O only. Keeping an
@@ -869,7 +883,7 @@ class XaiLlmBridge:
             response_body_started = False
             response: httpx.Response | None = None
             try:
-                async with AsyncExitStack() as response_stack:
+                async with _shielded_response_stack() as response_stack:
                     async with asyncio.timeout_at(deadline):
                         response = await response_stack.enter_async_context(
                             self._client.stream(
@@ -905,6 +919,7 @@ class XaiLlmBridge:
                         response,
                         on_body_chunk=mark_response_body_started,
                     ).__aiter__()
+                    response_stack.push_async_callback(shielded_aclose, sse_events)
                     while True:
                         try:
                             if loop.time() >= deadline:
@@ -1027,8 +1042,7 @@ class XaiLlmBridge:
             try:
                 if provider_response is None:
                     raise ValueError("Responses stream has no terminal response")
-                if "".join(text_parts) != _responses_output_text(provider_response):
-                    raise ValueError("Responses deltas do not match terminal output text")
+                terminal_text = _responses_output_text(provider_response)
                 usage = _responses_usage(provider_response)
             except ValueError as exception:
                 _log_call(
@@ -1044,6 +1058,35 @@ class XaiLlmBridge:
                     category=ErrorCategory.SCHEMA,
                     retryable=False,
                 ) from exception
+
+            delivered_text = "".join(text_parts)
+            if delivered_text != terminal_text:
+                if not terminal_text.startswith(delivered_text):
+                    _log_call(
+                        model=provider_response.model,
+                        started_at=started_at,
+                        status="FAILED",
+                        attempt=attempt,
+                        error_code=ErrorCategory.SCHEMA.value,
+                        failure_kind="schema",
+                        tool="responses",
+                    )
+                    raise LlmBridgeError(
+                        category=ErrorCategory.SCHEMA,
+                        retryable=False,
+                    )
+                missing_suffix = terminal_text[len(delivered_text) :]
+                logger.warning(
+                    "xAI Responses stream omitted a terminal text suffix",
+                    extra={
+                        "model": provider_response.model,
+                        "deltaChars": len(delivered_text),
+                        "terminalChars": len(terminal_text),
+                        "recoveredChars": len(missing_suffix),
+                    },
+                )
+                text_parts.append(missing_suffix)
+                yield LlmTextDelta(text=missing_suffix)
 
             self._warn_model_mismatch(expected=profile.model, actual=provider_response.model)
             _log_call(

@@ -7,6 +7,8 @@ from copy import deepcopy
 import httpx
 import pytest
 
+from edupilot_ai.core.errors import ErrorCategory
+from edupilot_ai.llm.bridge import LlmBridgeError
 from edupilot_ai.models.plan import (
     AgentOutput,
     PedagogyPolicy,
@@ -15,10 +17,12 @@ from edupilot_ai.models.plan import (
     TurnPlan,
 )
 from edupilot_ai.models.turn import NoteDraft, TurnRequest
-from edupilot_ai.orchestration.agents import detect_note_request
+from edupilot_ai.orchestration.agents import NoteAgent, detect_note_request
 from edupilot_ai.orchestration.context import ContextBuilder
 from edupilot_ai.orchestration.plan_synthesis import synthesize_plan
 from edupilot_ai.orchestration.policy import PolicyVerifier, PolicyViolation
+from edupilot_ai.orchestration.timing import TurnDeadline
+from edupilot_ai.settings import Settings
 from tests.fakes import FakeLlm
 
 
@@ -229,6 +233,81 @@ async def test_note_validation_twice_returns_schema_error(
     assert response.json()["error"]["code"] == "AI_RESPONSE_INVALID"
     assert response.json()["error"]["category"] == "SCHEMA"
     assert len(fake_llm.calls) == 2
+
+
+async def test_note_retry_uses_remaining_turn_deadline(
+    fake_llm: FakeLlm,
+    settings: Settings,
+    turn_payload: dict[str, object],
+) -> None:
+    context = ContextBuilder().build(TurnRequest.model_validate(_note_payload(turn_payload)))
+    readings = iter([100.0, 130.0])
+    deadline = TurnDeadline(expires_at=145.0, clock=lambda: next(readings))
+    agent = NoteAgent(llm=fake_llm, profile=settings.qa_llm_profile)
+    fake_llm.queue(
+        NoteDraft.model_construct(title="가" * 61, content="본문"),
+        NoteDraft(title="정상 제목", content="## 정상 본문\n복습 내용입니다."),
+    )
+
+    result = await agent.run(
+        context,
+        "지금까지 학습한 내용을 복습용 노트로 정리하라.",
+        deadline=deadline,
+    )
+
+    assert fake_llm.timeouts == [45, 15]
+    assert result.note_draft is not None
+    assert result.note_draft.title == "정상 제목"
+
+
+async def test_note_exhausted_deadline_prevents_second_provider_call(
+    fake_llm: FakeLlm,
+    settings: Settings,
+    turn_payload: dict[str, object],
+) -> None:
+    context = ContextBuilder().build(TurnRequest.model_validate(_note_payload(turn_payload)))
+    readings = iter([100.0, 146.0])
+    deadline = TurnDeadline(expires_at=145.0, clock=lambda: next(readings))
+    agent = NoteAgent(llm=fake_llm, profile=settings.qa_llm_profile)
+    fake_llm.queue(
+        NoteDraft.model_construct(title="가" * 61, content="본문"),
+        NoteDraft(title="호출되면 안 됨", content="## 본문\n호출되면 안 됩니다."),
+    )
+
+    with pytest.raises(LlmBridgeError) as raised:
+        await agent.run(
+            context,
+            "지금까지 학습한 내용을 복습용 노트로 정리하라.",
+            deadline=deadline,
+        )
+
+    assert raised.value.category is ErrorCategory.TIMEOUT
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.timeouts == [45]
+
+
+async def test_note_non_schema_failure_is_not_retried(
+    fake_llm: FakeLlm,
+    settings: Settings,
+    turn_payload: dict[str, object],
+) -> None:
+    context = ContextBuilder().build(TurnRequest.model_validate(_note_payload(turn_payload)))
+    deadline = TurnDeadline(expires_at=145.0, clock=lambda: 100.0)
+    agent = NoteAgent(llm=fake_llm, profile=settings.qa_llm_profile)
+    fake_llm.queue(
+        LlmBridgeError(category=ErrorCategory.INTERNAL, retryable=True),
+    )
+
+    with pytest.raises(LlmBridgeError) as raised:
+        await agent.run(
+            context,
+            "지금까지 학습한 내용을 복습용 노트로 정리하라.",
+            deadline=deadline,
+        )
+
+    assert raised.value.category is ErrorCategory.INTERNAL
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.timeouts == [45]
 
 
 async def test_note_internal_field_violation_retries_without_logging_content(
