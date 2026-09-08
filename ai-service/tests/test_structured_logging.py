@@ -28,6 +28,10 @@ def test_json_log_contains_correlation_and_action_fields() -> None:
                 "status": "SUCCESS",
                 "durationMs": 12.5,
                 "exceptionType": "RemoteProtocolError",
+                "cleanupTimeoutSeconds": 1.0,
+                "deltaChars": 120,
+                "terminalChars": 135,
+                "recoveredChars": 15,
             },
         )
     finally:
@@ -45,6 +49,10 @@ def test_json_log_contains_correlation_and_action_fields() -> None:
     assert record["status"] == "SUCCESS"
     assert record["durationMs"] == 12.5
     assert record["exceptionType"] == "RemoteProtocolError"
+    assert record["cleanupTimeoutSeconds"] == 1.0
+    assert record["deltaChars"] == 120
+    assert record["terminalChars"] == 135
+    assert record["recoveredChars"] == 15
     assert record["timestamp"].endswith("+00:00")
 
 

@@ -36,6 +36,10 @@ _OPTIONAL_FIELDS = (
     "evidenceCount",
     "fileId",
     "sizeBytes",
+    "cleanupTimeoutSeconds",
+    "deltaChars",
+    "terminalChars",
+    "recoveredChars",
 )
 
 

@@ -181,17 +181,33 @@ class Settings(BaseSettings):
         default=ReasoningEffort.LOW,
         validation_alias="ORCHESTRATOR_REASONING_EFFORT",
     )
+    orchestrator_max_tokens: PositiveInt | None = Field(
+        default=None,
+        validation_alias="ORCHESTRATOR_MAX_TOKENS",
+    )
     explainer_reasoning_effort: ReasoningEffort = Field(
         default=ReasoningEffort.MEDIUM,
         validation_alias="EXPLAINER_REASONING_EFFORT",
     )
     qa_reasoning_effort: ReasoningEffort = Field(
-        default=ReasoningEffort.MEDIUM,
+        default=ReasoningEffort.LOW,
         validation_alias="QA_REASONING_EFFORT",
+    )
+    qa_max_tokens: PositiveInt | None = Field(
+        default=None,
+        validation_alias="QA_MAX_TOKENS",
     )
     quiz_reasoning_effort: ReasoningEffort = Field(
         default=ReasoningEffort.MEDIUM,
         validation_alias="QUIZ_REASONING_EFFORT",
+    )
+    quiz_max_tokens: PositiveInt | None = Field(
+        default=None,
+        validation_alias="QUIZ_MAX_TOKENS",
+    )
+    note_reasoning_effort: ReasoningEffort = Field(
+        default=ReasoningEffort.MEDIUM,
+        validation_alias="NOTE_REASONING_EFFORT",
     )
     grader_reasoning_effort: ReasoningEffort = Field(
         default=ReasoningEffort.HIGH,
@@ -257,18 +273,26 @@ class Settings(BaseSettings):
             temperature=self.agent_temperature,
         )
 
-    def _profile(self, effort: ReasoningEffort) -> AgentLlmProfile:
+    def _profile(
+        self,
+        effort: ReasoningEffort,
+        *,
+        max_tokens: PositiveInt | None = None,
+    ) -> AgentLlmProfile:
         return AgentLlmProfile(
             model=self.model_name,
             reasoning_effort=effort,
-            max_tokens=self.agent_max_tokens,
+            max_tokens=max_tokens or self.agent_max_tokens,
             temperature=self.agent_temperature,
         )
 
     @property
     def orchestrator_llm_profile(self) -> AgentLlmProfile:
         """Build the low-latency Plan profile."""
-        return self._profile(self.orchestrator_reasoning_effort)
+        return self._profile(
+            self.orchestrator_reasoning_effort,
+            max_tokens=self.orchestrator_max_tokens,
+        )
 
     @property
     def explainer_llm_profile(self) -> AgentLlmProfile:
@@ -278,12 +302,23 @@ class Settings(BaseSettings):
     @property
     def qa_llm_profile(self) -> AgentLlmProfile:
         """Build the interactive question-answering profile."""
-        return self._profile(self.qa_reasoning_effort)
+        return self._profile(
+            self.qa_reasoning_effort,
+            max_tokens=self.qa_max_tokens,
+        )
 
     @property
     def quiz_llm_profile(self) -> AgentLlmProfile:
         """Build the medium-reasoning quiz generation profile."""
-        return self._profile(self.quiz_reasoning_effort)
+        return self._profile(
+            self.quiz_reasoning_effort,
+            max_tokens=self.quiz_max_tokens,
+        )
+
+    @property
+    def note_llm_profile(self) -> AgentLlmProfile:
+        """Build the note profile independently from interactive QA tuning."""
+        return self._profile(self.note_reasoning_effort)
 
     @property
     def grader_llm_profile(self) -> AgentLlmProfile:
