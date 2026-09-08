@@ -181,6 +181,33 @@ class TurnAiUsageIntegrationTest {
 	}
 
 	@Test
+	void directNoteTurnPersistsTurnUsageTokens() {
+		when(preparationService.prepare(
+			1L,
+			100L,
+			"request-1",
+			"지금까지 배운 내용을 노트로 정리해줘",
+			null
+		)).thenReturn(new PreparedTurn(501L));
+		when(aiClient.executeTurn(any(), any(Duration.class)))
+			.thenReturn(directNoteAiResponse(
+				new AiUsage("grok-4", 30L, 12L, 2L)
+			));
+
+		turnService.execute(1L, 100L, directNoteRequest());
+
+		assertThat(usageRepository.findAll()).singleElement().satisfies(log -> {
+			assertThat(log.getUserId()).isEqualTo(1L);
+			assertThat(log.getFeature()).isEqualTo(AiFeature.TURN);
+			assertThat(log.getModel()).isEqualTo("grok-4");
+			assertThat(log.getInputTokens()).isEqualTo(30L);
+			assertThat(log.getOutputTokens()).isEqualTo(12L);
+			assertThat(log.getReasoningTokens()).isEqualTo(2L);
+			assertThat(log.isSuccess()).isTrue();
+		});
+	}
+
+	@Test
 	void failedTurnPersistsFailureAndKeepsOriginalException() {
 		AiClientException original = new AiClientException(
 			ErrorCode.AI_SERVICE_TIMEOUT,
@@ -303,6 +330,15 @@ class TurnAiUsageIntegrationTest {
 		);
 	}
 
+	private TurnRequest directNoteRequest() {
+		return new TurnRequest(
+			"request-1",
+			"USER_QUESTION",
+			new ObjectMapper().createObjectNode()
+				.put("message", "지금까지 배운 내용을 노트로 정리해줘")
+		);
+	}
+
 	private io.edupilot.ai.dto.TurnResponse aiResponse(AiUsage usage) {
 		return new io.edupilot.ai.dto.TurnResponse(
 			"1.0",
@@ -315,6 +351,26 @@ class TurnAiUsageIntegrationTest {
 			null,
 			List.of(),
 			null,
+			usage
+		);
+	}
+
+	private io.edupilot.ai.dto.TurnResponse directNoteAiResponse(AiUsage usage) {
+		return new io.edupilot.ai.dto.TurnResponse(
+			"1.0",
+			"turn-upstream",
+			"WRITE_NOTE",
+			List.of(),
+			List.of(Map.of(
+				"messageType", "SYSTEM",
+				"content", "노트 초안을 만들었습니다."
+			)),
+			Map.of(),
+			List.of(),
+			null,
+			List.of(),
+			null,
+			new io.edupilot.ai.dto.NoteDraft("복습 노트", "핵심 내용"),
 			usage
 		);
 	}
