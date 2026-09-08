@@ -179,7 +179,7 @@ async def test_xai_bridge_uses_responses_wire_for_structured_file_attachment(
                 ],
             },
         ],
-        "reasoning_effort": "low",
+        "reasoning": {"effort": "low"},
         "max_output_tokens": 4096,
         "store": False,
         "text": {

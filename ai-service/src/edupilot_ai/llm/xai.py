@@ -1101,7 +1101,7 @@ class XaiLlmBridge:
                 messages=messages,
                 attachments=attachments,
             ),
-            "reasoning_effort": profile.reasoning_effort.value,
+            "reasoning": {"effort": profile.reasoning_effort.value},
             "max_output_tokens": profile.max_tokens,
             "store": False,
         }

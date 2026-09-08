@@ -596,8 +596,13 @@ AI Service의 `models/exam_draft.py`와 `docs/contracts/exam-draft.schema.json`�
 | `AGENT_MAX_TOKENS` | `16384` | 기본 최대 출력 토큰 |
 | `AGENT_TEMPERATURE` | `null` | 선택적 temperature |
 | `ORCHESTRATOR_REASONING_EFFORT` | `low` | Orchestrator 프로필 |
+| `ORCHESTRATOR_MAX_TOKENS` | `4096` | Orchestrator 최대 출력 토큰(compose 기본값, 미설정 시 `AGENT_MAX_TOKENS`) |
 | `EXPLAINER_REASONING_EFFORT` | `medium` | ExplainerAgent 프로필 |
-| `QA_REASONING_EFFORT` | `medium` | QaAgent 프로필 |
+| `QA_REASONING_EFFORT` | `low` | QaAgent 저지연 프로필 |
+| `QA_MAX_TOKENS` | `4096` | QaAgent 최대 출력 토큰(compose 기본값, 미설정 시 `AGENT_MAX_TOKENS`) |
+| `QUIZ_REASONING_EFFORT` | `medium` | QuizAgent 품질 우선 프로필 |
+| `QUIZ_MAX_TOKENS` | `12288` | QuizAgent 최대 출력 토큰(compose 기본값, 미설정 시 `AGENT_MAX_TOKENS`) |
+| `NOTE_REASONING_EFFORT` | `medium` | NoteAgent 프로필(QA 저지연 튜닝과 분리) |
 | `SUMMARY_REASONING_EFFORT` | `low` | conversation-summary 프로필 |
 
 ## 8. 확정 로그 및 문서 반영 대기
