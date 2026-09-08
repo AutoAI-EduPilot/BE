@@ -1,5 +1,7 @@
 """LlmBridge protocol and profile configuration tests."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import BaseModel, SecretStr, ValidationError
 
@@ -83,9 +85,30 @@ def test_role_profiles_apply_independent_token_overrides() -> None:
 def test_role_profiles_fall_back_to_global_model_and_token_budget(
     settings: Settings,
 ) -> None:
+    assert settings.agent_max_tokens == 16_384
     assert settings.orchestrator_llm_profile.max_tokens == settings.agent_max_tokens
     assert settings.qa_llm_profile.max_tokens == settings.agent_max_tokens
     assert settings.quiz_llm_profile.max_tokens == settings.agent_max_tokens
+
+
+@pytest.mark.parametrize("example_path", [".env.example", "ai-service/.env.example"])
+def test_example_profiles_preserve_original_token_budget(
+    example_path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for environment_name in (
+        "AGENT_MAX_TOKENS",
+        "ORCHESTRATOR_MAX_TOKENS",
+        "QA_MAX_TOKENS",
+        "QUIZ_MAX_TOKENS",
+    ):
+        monkeypatch.delenv(environment_name, raising=False)
+    repository = Path(__file__).resolve().parents[2]
+    settings = Settings(_env_file=repository / example_path)
+
+    assert settings.orchestrator_llm_profile.max_tokens == 16_384
+    assert settings.qa_llm_profile.max_tokens == 16_384
+    assert settings.quiz_llm_profile.max_tokens == 16_384
 
 
 @pytest.mark.parametrize(
