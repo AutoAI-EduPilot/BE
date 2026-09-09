@@ -427,6 +427,9 @@ class MainServiceApplicationTests {
 				"$.paths['/api/exams/{examId}/submissions/me'].get"
 			).exists())
 			.andExpect(jsonPath(
+				"$.paths['/api/exams/{examId}/attempts/start'].post"
+			).exists())
+			.andExpect(jsonPath(
 				"$.paths['/api/users/me/memory'].get"
 			).exists())
 			.andExpect(jsonPath("$.paths['/api/users/me'].delete").exists())

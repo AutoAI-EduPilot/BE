@@ -3,6 +3,7 @@ package io.edupilot.exam;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -11,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +34,9 @@ import io.edupilot.user.UserRole;
 
 @Service
 public class ExamSubmissionPersistenceService {
+	private static final Logger log = LoggerFactory.getLogger(
+		ExamSubmissionPersistenceService.class
+	);
 	private static final Instant NO_GRADING_LEASE = Instant.EPOCH;
 	private static final int MAX_GRADING_RETRIES = 3;
 	private static final int REQUEUE_LIMIT = MAX_GRADING_RETRIES - 1;
@@ -44,6 +50,7 @@ public class ExamSubmissionPersistenceService {
 	private final ExamQuestionRepository questionRepository;
 	private final ExamSubmissionRepository submissionRepository;
 	private final ExamAnswerRepository answerRepository;
+	private final ExamAttemptStartRepository attemptStartRepository;
 	private final UserRepository userRepository;
 	private final DeterministicAnswerGrader deterministicAnswerGrader;
 	private final ExamGradingDispatcher gradingDispatcher;
@@ -55,6 +62,7 @@ public class ExamSubmissionPersistenceService {
 		ExamQuestionRepository questionRepository,
 		ExamSubmissionRepository submissionRepository,
 		ExamAnswerRepository answerRepository,
+		ExamAttemptStartRepository attemptStartRepository,
 		UserRepository userRepository,
 		DeterministicAnswerGrader deterministicAnswerGrader,
 		ExamGradingDispatcher gradingDispatcher,
@@ -65,6 +73,7 @@ public class ExamSubmissionPersistenceService {
 		this.questionRepository = questionRepository;
 		this.submissionRepository = submissionRepository;
 		this.answerRepository = answerRepository;
+		this.attemptStartRepository = attemptStartRepository;
 		this.userRepository = userRepository;
 		this.deterministicAnswerGrader = deterministicAnswerGrader;
 		this.gradingDispatcher = gradingDispatcher;
@@ -119,11 +128,24 @@ public class ExamSubmissionPersistenceService {
 		User user = userRepository.findById(userId)
 			.filter(User::isActive)
 			.orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
-		ExamSubmission submission = submissionRepository.saveAndFlush(
-			ExamSubmission.create(
-				exam, user, attemptNo, requestId, exam.getTotalScore(), clock.instant()
-			)
+		Instant submittedAt = clock.instant();
+		ExamAttemptStart attemptStart = attemptStartRepository
+			.findByExam_IdAndUser_Id(examId, userId)
+			.orElse(null);
+		ExamSubmission submission = ExamSubmission.create(
+			exam, user, attemptNo, requestId, exam.getTotalScore(), submittedAt
 		);
+		if (attemptStart != null) {
+			submission.recordAttemptTiming(
+				attemptStart.getStartedAt(),
+				durationSeconds(examId, userId, attemptStart.getStartedAt(), submittedAt)
+			);
+		}
+		submission = submissionRepository.saveAndFlush(submission);
+		if (attemptStart != null) {
+			// A successful submission consumes the pending start; rollback preserves it.
+			attemptStartRepository.delete(attemptStart);
+		}
 
 		List<ExamAnswer> answers = new ArrayList<>();
 		boolean hasAnsweredSubjective = false;
@@ -422,6 +444,23 @@ public class ExamSubmissionPersistenceService {
 		}
 		return score.multiply(BigDecimal.valueOf(100))
 			.divide(maxScore, 2, RoundingMode.HALF_UP);
+	}
+
+	private Integer durationSeconds(
+		Long examId,
+		Long userId,
+		Instant startedAt,
+		Instant submittedAt
+	) {
+		long seconds = Duration.between(startedAt, submittedAt).getSeconds();
+		if (seconds < 0 || seconds > Integer.MAX_VALUE) {
+			log.warn(
+				"Ignoring invalid exam duration examId={} userId={} startedAt={} submittedAt={}",
+				examId, userId, startedAt, submittedAt
+			);
+			return null;
+		}
+		return Math.toIntExact(seconds);
 	}
 
 	private String questionId(ExamQuestion question) {

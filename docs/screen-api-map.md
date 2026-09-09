@@ -48,8 +48,9 @@
 | 시험 결과 관리 | 학생별 최신 제출·특정 시도 조회 | `GET /api/exams/{examId}/submissions`, `GET .../submissions/{submissionId}` | 운영 화면은 전체 상태의 최신 attempt를 표시. 성적·리포트 대표값은 최신 GRADED attempt | 시험 소유권, 페이지네이션 |
 | 시험 결과 관리 | 실패 제출 재채점 | `POST /api/exams/{examId}/submissions/{submissionId}/regrade` | `GRADING_FAILED`에만 버튼 노출. 202/SUBMITTED 후 결과 조회로 전환하며 저장 답안을 재사용 | 비소유·부재 404, 상태 충돌 409. executor 포화는 202 후 scheduler 회수 |
 | 시험 응시 | 공개·마감 시험 목록과 상세 조회 | `GET /api/classrooms/{classroomId}/exams`, `GET /api/exams/{examId}` | PUBLISHED는 응시 UI, CLOSED는 읽기 전용 결과 UI | DRAFT는 `EXAM_NOT_FOUND`로 은닉 |
+| 시험 응시 | 응시 화면 진입 | `POST /api/exams/{examId}/attempts/start` | 화면 진입 시 1회 호출하고 반환된 `startedAt`을 표시 기준으로 사용. 새로고침·재진입도 같은 미소비 시각 반환 | 비멤버·강사·DRAFT/CLOSED·완료 강의실 |
 | 시험 응시 | 답안 제출·통신 재시도·재응시 | `POST /api/exams/{examId}/submissions` | 응답 `status`로 분기. 같은 제출 재시도는 같은 `requestId`, 재응시·GRADING_FAILED 재제출은 새 `requestId` | CLOSED, SUBMITTED 중복, 재응시 불가, 답안 형식 오류 |
-| 시험 결과 | 내 최신 또는 지정 시도 조회 | `GET /api/exams/{examId}/submissions/me?attemptNo=` | SUBMITTED는 2초 polling→30초 뒤 5초, terminal에서 중단. 31분부터 지연 안내, 최대 3개 채점 창을 반영해 91분 초과 시 마지막 조회 후 문의 안내 | 접근 권한, 시도 없음 |
+| 시험 결과 | 내 최신 또는 지정 시도 조회 | `GET /api/exams/{examId}/submissions/me?attemptNo=` | `reviewAvailable`로 정답·해설 영역을 토글하고 `durationSeconds=null`은 `-`로 표시. SUBMITTED는 2초 polling→30초 뒤 5초, terminal에서 중단. 31분부터 지연 안내, 최대 3개 채점 창을 반영해 91분 초과 시 마지막 조회 후 문의 안내 | 접근 권한, 시도 없음 |
 | 리포트 학생 선택 `/classrooms/:classroomId/reports` | 수강생 목록·검색·정렬·제외 | `GET·DELETE /api/classrooms/{classroomId}/students[/{studentId}]` | 프로필·가입일·최근 학습 시각·평균 진도·최근 7일 AI 질문 수 표시. 이름 검색과 최근 활동/이름/낮은 진도 정렬 지원 | 강의실 관리 권한, 잘못된 정렬값, 제외된 학생 404 |
 | 학생 리포트 `/classrooms/:classroomId/students/:studentId/reports` | 버전 목록 조회·FULL/WEEK 생성 | `GET·POST /api/classrooms/{classroomId}/students/{studentId}/reports` | 202의 `reportId`를 유지하고 `pollAfterSeconds` 간격으로 상세 polling | 범위·주차 검증, 학생 소속, 강의실 관리 권한 |
 | 리포트 상세 `/reports/:reportId` | 생성 상태·실패 fallback·완료 결과 조회 | `GET /api/reports/{reportId}` | PROCESSING 표시, FAILED 사실 요약, COMPLETED 점수·단계·trend·근거 표시. 근거의 선택 `metrics`는 label/value로 표시하고 필드가 없으면 수치 영역을 숨김. trend는 같은 scope(FULL 또는 같은 주차 WEEK)의 직전 버전 대비이며 null score는 데이터 부족으로 표시 | `REPORT_NOT_FOUND`, AI failureCode |
@@ -142,7 +143,7 @@ turn 응답의 `state.activeQuizId`는 nullable입니다. 퀴즈 생성 턴에�
 - Orchestrator의 세부 Plan 또는 비공개 reason
 - Grok 프롬프트와 내부 추론
 - 퀴즈 제출 전 정답·루브릭
-- 별도 시험의 정답·해설·모범 답안·rubric은 DEC-031 D4 확정 전까지 제출 후에도 비노출
+- 별도 시험의 rubric과 비공개 정답 원본. 본인 결과 API의 `reviewAvailable=true`일 때 제공되는 명시적 `correctAnswer`, `explanation`만 사용
 - 장기 메모리 승격 내부 점수/근거 원문
 
 ## 5. 공동 합의 필요
@@ -153,7 +154,6 @@ turn 응답의 `state.activeQuizId`는 nullable입니다. 퀴즈 생성 턴에�
 - SSE 이벤트 schema와 heartbeat·취소·`Last-Event-ID` 재연결 (인증은 fetch 스트림 + Authorization 헤더로 확정 — DEC-021)
 - 처리 중 PDF와 AI 장시간 작업 표시
 - 통합 학습 퀴즈 재제출 정책
-- 별도 시험 정답·해설 공개 시점(현재 임시 비공개)
 - 오류별 사용자 문구와 재시도 버튼 정책
 - 타 사용자 아바타가 필요한 Epic 10 강의실 범위에서 공개 또는 사용자 ID 기반 아바타 endpoint 검토
 - 강의실 색상은 `BLUE | GREEN | PURPLE | ORANGE | RED | GRAY`와 DEC-030의 고정 hex 매핑을 사용
