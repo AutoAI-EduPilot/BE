@@ -15,9 +15,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import io.edupilot.auth.AuthenticatedUser;
+import io.edupilot.exam.dto.ExamAttemptStartResponse;
 import io.edupilot.exam.dto.ExamSubmissionResponse;
 import io.edupilot.exam.dto.InstructorExamDetailResponse;
 import io.edupilot.exam.dto.InstructorSubmissionListResponse;
+import io.edupilot.exam.dto.StudentExamSubmissionResponse;
 import io.edupilot.exam.dto.SubmitExamRequest;
 import io.edupilot.exam.dto.UpdateExamRequest;
 import io.edupilot.global.response.ApiResponse;
@@ -175,9 +177,20 @@ public class ExamController {
 		return ResponseEntity.status(status).body(ApiResponse.success(response));
 	}
 
+	@PostMapping("/{examId}/attempts/start")
+	@Operation(summary = "시험 응시 시작")
+	public ApiResponse<ExamAttemptStartResponse> startAttempt(
+		@AuthenticationPrincipal AuthenticatedUser user,
+		@PathVariable Long examId
+	) {
+		return ApiResponse.success(studentExamService.startAttempt(
+			user.userId(), user.role(), examId
+		));
+	}
+
 	@GetMapping("/{examId}/submissions/me")
 	@Operation(summary = "내 시험 결과 조회")
-	public ApiResponse<ExamSubmissionResponse> mySubmission(
+	public ApiResponse<StudentExamSubmissionResponse> mySubmission(
 		@AuthenticationPrincipal AuthenticatedUser user,
 		@PathVariable Long examId,
 		@RequestParam(required = false) @Min(1) Integer attemptNo

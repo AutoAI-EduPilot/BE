@@ -94,6 +94,7 @@ public class ExamAnswer {
 	public int getQuestionNo() { return question.getQuestionNo(); }
 	public ExamQuestionType getQuestionType() { return question.getQuestionType(); }
 	public String getQuestionText() { return question.getPublicQuestion().question(); }
+	public ExamPublicQuestion getPublicQuestion() { return question.getPublicQuestion(); }
 	public ExamPrivateAnswer getPrivateAnswer() { return question.getPrivateAnswer(); }
 	public String getAnswer() { return answer; }
 	public BigDecimal getScore() { return score; }

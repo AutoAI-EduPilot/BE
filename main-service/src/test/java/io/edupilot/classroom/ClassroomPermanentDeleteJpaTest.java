@@ -28,6 +28,8 @@ import io.edupilot.diagnosis.DiagnosisRepository;
 import io.edupilot.exam.Exam;
 import io.edupilot.exam.ExamAnswer;
 import io.edupilot.exam.ExamAnswerRepository;
+import io.edupilot.exam.ExamAttemptStart;
+import io.edupilot.exam.ExamAttemptStartRepository;
 import io.edupilot.exam.ExamPrivateAnswer;
 import io.edupilot.exam.ExamPublicQuestion;
 import io.edupilot.exam.ExamQuestion;
@@ -119,6 +121,7 @@ class ClassroomPermanentDeleteJpaTest {
 	@Autowired private ExamQuestionRepository examQuestionRepository;
 	@Autowired private ExamSubmissionRepository examSubmissionRepository;
 	@Autowired private ExamAnswerRepository examAnswerRepository;
+	@Autowired private ExamAttemptStartRepository examAttemptStartRepository;
 	@Autowired private ReportCriterionRepository reportCriterionRepository;
 	@Autowired private ReportGenerationRepository reportGenerationRepository;
 	@Autowired private StudentReportRepository studentReportRepository;
@@ -293,6 +296,7 @@ class ClassroomPermanentDeleteJpaTest {
 		Exam exam = examRepository.save(Exam.create(
 			classroom, 1, "Exam", null, false
 		));
+		examAttemptStartRepository.save(ExamAttemptStart.create(exam, learner, NOW));
 		ExamQuestion question = examQuestionRepository.save(ExamQuestion.create(
 			exam,
 			1,
@@ -406,6 +410,7 @@ class ClassroomPermanentDeleteJpaTest {
 	private void assertDeletedTablesAreEmpty() {
 		for (String table : List.of(
 			"exam_answers",
+			"exam_attempt_starts",
 			"exam_submissions",
 			"exam_questions",
 			"exams",
