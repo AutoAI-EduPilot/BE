@@ -25,6 +25,7 @@ import io.edupilot.exam.dto.InstructorSubmissionListResponse;
 import io.edupilot.exam.dto.UpdateExamRequest;
 import io.edupilot.global.error.BusinessException;
 import io.edupilot.global.error.ErrorCode;
+import io.edupilot.notification.ExamNotificationDispatcher;
 import io.edupilot.user.UserRole;
 
 @Service
@@ -38,6 +39,7 @@ public class InstructorExamService {
 	private final ExamSubmissionRepository submissionRepository;
 	private final ExamAnswerRepository answerRepository;
 	private final ExamSubmissionPersistenceService submissionPersistenceService;
+	private final ExamNotificationDispatcher notificationDispatcher;
 	private final Clock clock;
 
 	public InstructorExamService(
@@ -47,6 +49,7 @@ public class InstructorExamService {
 		ExamSubmissionRepository submissionRepository,
 		ExamAnswerRepository answerRepository,
 		ExamSubmissionPersistenceService submissionPersistenceService,
+		ExamNotificationDispatcher notificationDispatcher,
 		Clock clock
 	) {
 		this.classroomService = classroomService;
@@ -55,6 +58,7 @@ public class InstructorExamService {
 		this.submissionRepository = submissionRepository;
 		this.answerRepository = answerRepository;
 		this.submissionPersistenceService = submissionPersistenceService;
+		this.notificationDispatcher = notificationDispatcher;
 		this.clock = clock;
 	}
 
@@ -68,12 +72,14 @@ public class InstructorExamService {
 		Classroom classroom = classroomService.requireOwnerForUpdate(userId, role, classroomId);
 		classroomService.assertWritable(classroom);
 		validateWeekNumber(classroom, request.weekNumber());
+		validateDueAt(request.dueAt());
 		Exam exam = examRepository.saveAndFlush(Exam.create(
 			classroom,
 			request.weekNumber(),
 			normalizedRequired(request.title(), 200),
 			normalizedOptional(request.description(), 500),
-			Boolean.TRUE.equals(request.allowRetake())
+			Boolean.TRUE.equals(request.allowRetake()),
+			request.dueAt()
 		));
 		List<ExamQuestion> questions = replaceQuestions(exam, request.questions());
 		return InstructorExamDetailResponse.from(exam, questions);
@@ -136,6 +142,9 @@ public class InstructorExamService {
 		if (request.isWeekNumberPresent()) {
 			validateWeekNumber(exam.getClassroomWeekCount(), request.getWeekNumber());
 		}
+		if (request.isDueAtPresent()) {
+			validateDueAt(request.getDueAt());
+		}
 		exam.update(
 			request.isTitlePresent() ? normalizedRequired(request.getTitle(), 200) : null,
 			request.isDescriptionPresent(),
@@ -143,7 +152,9 @@ public class InstructorExamService {
 				? normalizedOptional(request.getDescription(), 500) : null,
 			request.isWeekNumberPresent(),
 			request.getWeekNumber(),
-			request.isAllowRetakePresent() ? request.getAllowRetake() : null
+			request.isAllowRetakePresent() ? request.getAllowRetake() : null,
+			request.isDueAtPresent(),
+			request.getDueAt()
 		);
 		List<ExamQuestion> questions;
 		if (request.isQuestionsPresent()) {
@@ -169,6 +180,9 @@ public class InstructorExamService {
 		validatePublish(exam, questions);
 		exam.publish(clock.instant());
 		examRepository.flush();
+		notificationDispatcher.publishedAfterCommit(
+			exam.getId(), exam.getClassroomId(), exam.getTitle()
+		);
 		return InstructorExamDetailResponse.from(exam, questions);
 	}
 
@@ -384,6 +398,12 @@ public class InstructorExamService {
 	private void validateWeekNumber(int weekCount, Integer weekNumber) {
 		if (weekNumber != null && (weekNumber < 1 || weekNumber > weekCount)) {
 			throw new BusinessException(ErrorCode.VALIDATION_FAILED);
+		}
+	}
+
+	private void validateDueAt(java.time.Instant dueAt) {
+		if (dueAt != null && !dueAt.isAfter(clock.instant())) {
+			throw new BusinessException(ErrorCode.INVALID_EXAM_DUE_AT);
 		}
 	}
 

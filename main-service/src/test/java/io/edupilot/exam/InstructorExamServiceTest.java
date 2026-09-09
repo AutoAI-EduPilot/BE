@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -27,8 +28,10 @@ import io.edupilot.classroom.ClassroomColor;
 import io.edupilot.classroom.ClassroomService;
 import io.edupilot.exam.dto.CreateExamRequest;
 import io.edupilot.exam.dto.ExamQuestionRequest;
+import io.edupilot.exam.dto.UpdateExamRequest;
 import io.edupilot.global.error.BusinessException;
 import io.edupilot.global.error.ErrorCode;
+import io.edupilot.notification.ExamNotificationDispatcher;
 import io.edupilot.quiz.QuizOption;
 import io.edupilot.quiz.RubricCriterion;
 import io.edupilot.user.User;
@@ -45,6 +48,7 @@ class InstructorExamServiceTest {
 	@Mock private ExamSubmissionRepository submissionRepository;
 	@Mock private ExamAnswerRepository answerRepository;
 	@Mock private ExamSubmissionPersistenceService submissionPersistenceService;
+	@Mock private ExamNotificationDispatcher notificationDispatcher;
 
 	private InstructorExamService service;
 	private Classroom classroom;
@@ -58,6 +62,7 @@ class InstructorExamServiceTest {
 			submissionRepository,
 			answerRepository,
 			submissionPersistenceService,
+			notificationDispatcher,
 			Clock.fixed(NOW, ZoneOffset.UTC)
 		);
 		User instructor = User.create(
@@ -90,7 +95,9 @@ class InstructorExamServiceTest {
 			1L,
 			UserRole.INSTRUCTOR,
 			10L,
-			new CreateExamRequest("Empty draft", null, null, null, List.of())
+			new CreateExamRequest(
+				"Empty draft", null, null, null, null, List.of()
+			)
 		);
 		var incompleteRubric = service.create(
 			1L,
@@ -101,6 +108,7 @@ class InstructorExamServiceTest {
 				null,
 				1,
 				false,
+				null,
 				List.of(shortQuestion(new BigDecimal("0.70")))
 			)
 		);
@@ -126,6 +134,81 @@ class InstructorExamServiceTest {
 		assertThat(first.status()).isEqualTo(ExamStatus.PUBLISHED);
 		assertThat(first.publishedAt()).isEqualTo(NOW);
 		assertThat(second.publishedAt()).isEqualTo(NOW);
+		verify(notificationDispatcher, times(1)).publishedAfterCommit(
+			100L, 10L, "Exam"
+		);
+	}
+
+	@Test
+	void dueAtSupportsFutureCreateExplicitClearAndUntouchedPastValue() {
+		Instant future = NOW.plusSeconds(3_600);
+		when(classroomService.requireOwnerForUpdate(1L, UserRole.INSTRUCTOR, 10L))
+			.thenReturn(classroom);
+		when(examRepository.saveAndFlush(any())).thenAnswer(invocation -> {
+			Exam exam = invocation.getArgument(0);
+			ReflectionTestUtils.setField(exam, "id", 100L);
+			return exam;
+		});
+
+		var created = service.create(
+			1L,
+			UserRole.INSTRUCTOR,
+			10L,
+			new CreateExamRequest(
+				"Due exam", null, null, false, future, List.of()
+			)
+		);
+		assertThat(created.dueAt()).isEqualTo(future);
+
+		Exam existing = Exam.create(
+			classroom, 1, "Exam", null, false, NOW.minusSeconds(60)
+		);
+		ReflectionTestUtils.setField(existing, "id", 100L);
+		when(examRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(existing));
+		UpdateExamRequest unrelated = new UpdateExamRequest();
+		unrelated.setDescription("unchanged due date");
+		assertThat(service.update(
+			1L, UserRole.INSTRUCTOR, 100L, unrelated
+		).dueAt()).isEqualTo(NOW.minusSeconds(60));
+
+		UpdateExamRequest clear = new UpdateExamRequest();
+		clear.setDueAt(null);
+		assertThat(service.update(
+			1L, UserRole.INSTRUCTOR, 100L, clear
+		).dueAt()).isNull();
+
+		Instant rescheduled = NOW.plusSeconds(7_200);
+		UpdateExamRequest reschedule = new UpdateExamRequest();
+		reschedule.setDueAt(rescheduled);
+		assertThat(service.update(
+			1L, UserRole.INSTRUCTOR, 100L, reschedule
+		).dueAt()).isEqualTo(rescheduled);
+	}
+
+	@Test
+	void rejectsPresentDueAtUnlessItIsStrictlyFuture() {
+		when(classroomService.requireOwnerForUpdate(1L, UserRole.INSTRUCTOR, 10L))
+			.thenReturn(classroom);
+		assertError(
+			() -> service.create(
+				1L,
+				UserRole.INSTRUCTOR,
+				10L,
+				new CreateExamRequest(
+					"Past", null, null, false, NOW, List.of()
+				)
+			),
+			ErrorCode.INVALID_EXAM_DUE_AT
+		);
+
+		Exam exam = exam(false);
+		when(examRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(exam));
+		UpdateExamRequest update = new UpdateExamRequest();
+		update.setDueAt(NOW.minusSeconds(1));
+		assertError(
+			() -> service.update(1L, UserRole.INSTRUCTOR, 100L, update),
+			ErrorCode.INVALID_EXAM_DUE_AT
+		);
 	}
 
 	@Test

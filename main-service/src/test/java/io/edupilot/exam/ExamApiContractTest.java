@@ -161,7 +161,7 @@ class ExamApiContractTest {
 			.thenReturn(new StudentExamListResponse(List.of(
 				new StudentExamListItemResponse(
 					30L, "시험", 1, ExamStatus.PUBLISHED, true, true,
-					new BigDecimal("10.00"), summary, NOW, null
+					new BigDecimal("10.00"), summary, NOW.plusSeconds(3_600), NOW, null
 				)
 			), 0, 20, 1, 1));
 		when(studentExamService.detail(2L, UserRole.LEARNER, 30L))
@@ -172,17 +172,22 @@ class ExamApiContractTest {
 					"q1", "문항", new BigDecimal("10.00"), ExamQuestionType.MCQ,
 					List.of(new ExamOptionResponse("a", "선택지"))
 				)),
-				summary, NOW, null
+				summary, NOW.plusSeconds(3_600), NOW, null
 			));
 		when(studentExamService.mySubmission(2L, UserRole.LEARNER, 30L, null))
 			.thenReturn(studentSubmission(10L, SubmissionStatus.GRADED, false));
 
 		MvcResult list = mockMvc.perform(get("/api/classrooms/20/exams")
 				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
-			.andExpect(status().isOk()).andReturn();
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.items[0].dueAt")
+				.value("2026-08-03T01:00:00Z"))
+			.andReturn();
 		MvcResult detail = mockMvc.perform(get("/api/exams/30")
 				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
-			.andExpect(status().isOk()).andReturn();
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.dueAt").value("2026-08-03T01:00:00Z"))
+			.andReturn();
 		MvcResult submission = mockMvc.perform(get("/api/exams/30/submissions/me")
 				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
 			.andExpect(status().isOk()).andReturn();

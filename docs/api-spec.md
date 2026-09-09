@@ -1122,6 +1122,7 @@ MVP의 제출 후 파이프라인은 동기 방식입니다. Spring은 제출·�
 - 소유 `INSTRUCTOR`는 본인 강의실의 DRAFT·PUBLISHED·CLOSED 시험을 관리하고 정답·모범 답안·rubric을 포함한 강사 뷰를 조회합니다. 역할 부족은 `ACCESS_DENIED`(403), 다른 강사 소유권은 `CLASSROOM_NOT_FOUND`(404)로 처리합니다.
 - 승인 멤버는 PUBLISHED·CLOSED 시험만 목록·상세 조회할 수 있습니다. DRAFT 시험은 상세와 제출 경로에서도 `EXAM_NOT_FOUND`(404)로 은닉합니다.
 - 시험 노출은 `exams.status`만으로 결정합니다. `weekNumber`는 표시·집계 라벨이며 주차 공개 상태에 종속되지 않습니다.
+- 모든 강사·학습자 시험 목록/상세 응답은 nullable `dueAt`을 ISO 8601 UTC로 반환합니다. `dueAt`은 표시·알림 기준일 뿐이며 경과해도 제출을 막거나 시험을 자동으로 CLOSED 전환하지 않습니다.
 - 완료 강의실은 시험 생성·수정·공개·학생 제출을 `CLASSROOM_COMPLETED`(409)로 차단합니다. 기존 PUBLISHED 시험 close와 DRAFT 시험 삭제는 정리 작업으로 허용합니다.
 
 #### 강사 API
@@ -1148,6 +1149,7 @@ MVP의 제출 후 파이프라인은 동기 방식입니다. Spring은 제출·�
   "description": "1~4주차 핵심 개념",
   "weekNumber": 4,
   "allowRetake": false,
+  "dueAt": "2026-09-30T14:59:59Z",
   "questions": [
     {
       "questionType": "SHORT",
@@ -1161,6 +1163,7 @@ MVP의 제출 후 파이프라인은 동기 방식입니다. Spring은 제출·�
 ```
 
 - `title`은 공백이 아닌 최대 200자, `description`은 nullable 최대 500자입니다. `weekNumber`는 nullable이며 값이 있으면 `1 <= weekNumber <= weekCount`입니다.
+- `dueAt`은 nullable ISO 8601 UTC이며 생성·수정에서 non-null 값을 명시하면 요청 처리 시각보다 미래여야 합니다. PATCH에서 생략하면 유지하고 `null`이면 제거합니다. 위반은 `INVALID_EXAM_DUE_AT`(400)입니다.
 - DRAFT 저장에서는 문항 0개와 불완전한 rubric weight 합을 허용합니다. publish 시 문항 1개 이상, `totalScore > 0`, 유형별 정답·모범 답안 비공백, 입력된 rubric의 weight 합 1.0을 검증합니다.
 - rubric 키 생략, null, 빈 배열은 모두 미입력입니다. 미입력 SHORT/ESSAY는 grade 호출 시 서버가 `[{"criterion":"모범 답안 부합도","weight":1.0}]`을 주입합니다.
 - publish를 CLOSED에서 호출하거나 공개 이후 수정·삭제하면 `EXAM_NOT_EDITABLE`(409)입니다. close를 DRAFT에서 호출하면 `EXAM_NOT_PUBLISHED`(409)입니다.
@@ -1220,8 +1223,8 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 
 | Method | URL | 계약 |
 | --- | --- | --- |
-| GET | `/api/classrooms/{classroomId}/exams?page&size` | PUBLISHED·CLOSED 목록과 본인 최신 제출 요약·`submittable`을 반환합니다. GRADING_FAILED 최신 시도는 재제출 가능으로 계산합니다. |
-| GET | `/api/exams/{examId}` | 공개 문항과 `submittable`만 반환합니다. |
+| GET | `/api/classrooms/{classroomId}/exams?page&size` | PUBLISHED·CLOSED 목록, nullable `dueAt`, 본인 최신 제출 요약·`submittable`을 반환합니다. GRADING_FAILED 최신 시도는 재제출 가능으로 계산합니다. |
+| GET | `/api/exams/{examId}` | 공개 문항, nullable `dueAt`, `submittable`만 반환합니다. |
 | POST | `/api/exams/{examId}/attempts/start` | PUBLISHED 시험의 응시 시작 시각을 기록합니다. 동일 시험·사용자의 미소비 기록이 있으면 같은 `startedAt`을 반환합니다. |
 | POST | `/api/exams/{examId}/submissions` | PUBLISHED 시험을 제출합니다. 주관식 AI 채점이 필요하면 `SUBMITTED`/202, 아니면 `GRADED`/200입니다. 두 응답은 같은 봉투와 `ExamSubmissionResponse` 스키마입니다. |
 | GET | `/api/exams/{examId}/submissions/me?attemptNo=` | 본인 결과를 조회하며 attemptNo 생략 시 최신 시도입니다. 공개 정책과 응시 시간 필드를 포함합니다. |
@@ -1356,7 +1359,7 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 }
 ```
 
-기존 사용자와 미설정 사용자의 기본값은 `true`, `true`, `NORMAL`입니다. 이메일·푸시와 학습 리마인더 발송은 범위 밖이며, 인앱 알림은 아래 네 가지 트리거에 한해 제공합니다.
+기존 사용자와 미설정 사용자의 기본값은 `true`, `true`, `NORMAL`입니다. 이메일·푸시와 학습 리마인더 발송은 범위 밖이며, 인앱 알림은 아래 일곱 가지 트리거에 한해 제공합니다.
 
 ### PATCH `/api/users/me/preferences`
 
@@ -1408,7 +1411,7 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 }
 ```
 
-`type`과 `link`의 리소스 참조는 다음 네 종류입니다.
+`type`과 `link`의 리소스 참조는 다음 일곱 종류입니다.
 
 | type | 수신자·생성 시점 | link |
 | --- | --- | --- |
@@ -1416,8 +1419,11 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 | `NOTICE_PUBLISHED` | 즉시 공지는 생성·게시 시, 예약 공지는 `publishAt` 도래 후 승인 멤버 전원 | `{classroomId, noticeId}` |
 | `JOIN_REQUEST_RECEIVED` | 입장 요청·재요청 시 강의실 소유 강사 | `{classroomId, joinRequestId}` |
 | `JOIN_REQUEST_PROCESSED` | 입장 요청 승인·거절 시 요청 학생 | `{classroomId, joinRequestId}` |
+| `EXAM_PUBLISHED` | 시험 공개 커밋 후 해당 강의실 승인·ACTIVE 학습자 전원 | `{classroomId, examId}` |
+| `EXAM_DEADLINE_APPROACHING` | 매일 09:00 KST, `dueAt`의 KST 날짜 기준 D-3·D-1인 PUBLISHED 시험의 미제출 승인·ACTIVE 학습자 | `{classroomId, examId}` |
+| `EXAM_GRADED` | 비동기 제출이 GRADED로 전환된 커밋 후 해당 제출 학습자 | `{classroomId, examId}` |
 
-예약 공지는 30초 주기 스캔에서 수신자 bulk insert와 공지의 발송 표식을 한 트랜잭션으로 처리해 한 번만 생성합니다. 알림은 생성 후 30일이 지나면 배치로 물리 삭제합니다.
+예약 공지는 30초 주기 스캔에서 수신자 bulk insert와 공지의 발송 표식을 한 트랜잭션으로 처리해 한 번만 생성합니다. 시험 알림은 `EXAM_PUBLISHED:{examId}:{userId}`, `EXAM_DEADLINE:{examId}:{userId}:D3|D1`, `EXAM_GRADED:{submissionId}:{userId}` dedup 키의 DB UNIQUE 제약을 최종 방어선으로 사용합니다. 미제출은 해당 시험에 상태와 무관하게 제출 행이 한 건도 없다는 뜻입니다. 마감 스케줄러는 `EDUPILOT_NOTIFICATION_EXAM_DEADLINE_ENABLED`(기본 `true`)로 중단할 수 있습니다. 알림은 생성 후 30일이 지나면 배치로 물리 삭제합니다.
 
 ### PATCH `/api/users/me/notifications/{notificationId}/read`
 

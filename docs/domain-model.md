@@ -21,7 +21,7 @@
 | Repair | Diagnosis, RepairResult | 진단 질문과 오개념 교정 |
 | Personalization | LearnerMemory | 반복 근거 기반 장기 개인화 정보 |
 
-DEC-030에 따라 강의실 최소셋을 MVP 영속 모델에 포함하고 인앱 알림은 자료·공지·입장 요청 네 트리거로 한정합니다. Course, Lecture, Assignment, File과 이메일·푸시·학습 리마인더는 범위 밖입니다.
+DEC-030에 따라 강의실 최소셋을 MVP 영속 모델에 포함하고 인앱 알림은 자료·공지·입장 요청과 시험 트리거로 한정합니다. Course, Lecture, Assignment, File과 이메일·푸시·학습 리마인더는 범위 밖입니다.
 
 ## 2. 엔티티 관계
 
@@ -136,9 +136,10 @@ erDiagram
 
 ### Notification
 
-- 알림은 한 사용자에게 귀속하며 `MATERIAL_UPLOADED | NOTICE_PUBLISHED | JOIN_REQUEST_RECEIVED | JOIN_REQUEST_PROCESSED` 네 유형만 저장합니다.
+- 알림은 한 사용자에게 귀속하며 기존 자료·공지·입장 요청 4종과 `EXAM_PUBLISHED | EXAM_DEADLINE_APPROACHING | EXAM_GRADED`를 저장합니다.
 - `link`는 FE 라우팅에 필요한 리소스 식별자만 담고, `readAt=null`은 읽지 않음을 뜻합니다. 읽음 처리는 최초 시각을 보존하는 멱등 전이입니다.
 - 강의실 멤버 대상 알림은 멤버를 로드하지 않고 DB `INSERT ... SELECT`로 일괄 생성합니다. 예약 공지는 공지 행 잠금 아래 알림 생성과 `notificationSentAt` 갱신을 한 트랜잭션으로 처리합니다.
+- 시험 알림은 nullable `dedupKey`의 UNIQUE 제약으로 재실행·다중 기동 중복을 차단합니다. 시험 공개와 비동기 채점 알림은 본 상태 트랜잭션 커밋 후 별도 짧은 트랜잭션으로 생성하며 실패가 공개·채점을 되돌리지 않습니다. 마감 임박 알림은 매일 09:00 KST에 D-3·D-1 시험의 승인·ACTIVE 학습자 중 제출 이력이 전혀 없는 사용자에게 생성합니다.
 - 생성 후 30일을 초과한 알림은 배치 물리 삭제하며 이메일·푸시 전송은 하지 않습니다.
 
 ### LearningSession
@@ -189,6 +190,7 @@ erDiagram
 ### Exam / ExamQuestion
 
 - 시험은 강의실에 귀속하며 `weekNumber`는 nullable 표시·집계 라벨입니다. 주차 번호가 있으면 강의실의 계산된 `weekCount` 안에 있어야 하지만 `ClassroomWeek` 행 존재는 요구하지 않습니다.
+- `dueAt`은 nullable UTC 시각입니다. 생성·수정에서 명시한 non-null 값은 현재보다 미래여야 하며 목록·상세 표시와 D-3·D-1 알림에만 사용합니다. 시각 경과로 제출을 차단하거나 상태를 자동으로 CLOSED로 바꾸지 않습니다.
 - 상태는 `DRAFT → PUBLISHED → CLOSED` 단방향입니다. DRAFT는 문항 0개와 불완전한 rubric을 허용하고, 공개 시 문항·총점·비공개 정답·rubric 불변식을 검증합니다.
 - 강사가 전달한 문항 배열은 DRAFT에서만 전체 교체합니다. 공개 이후 문항·설정 수정과 삭제는 금지하고 CLOSED 전환으로 종료합니다.
 - 공개 문항 JSON과 정답·모범 답안·rubric이 담긴 비공개 JSON을 분리합니다. 학생 목록·상세·POST 제출 응답에는 비공개 필드를 포함하지 않습니다. 본인 결과 조회는 공개 정책을 만족할 때만 유형별 `correctAnswer`와 `explanation`을 명시적으로 매핑하며 rubric과 비공개 원본은 노출하지 않습니다.
@@ -291,6 +293,7 @@ MVP는 세션 단일 `pageStatus`를 유지하고 페이지 이동 시 초기화
 
 - publish는 PUBLISHED에서, close는 CLOSED에서만 멱등입니다.
 - DRAFT에서 close하면 `EXAM_NOT_PUBLISHED`, CLOSED에서 publish하면 `EXAM_NOT_EDITABLE`입니다.
+- `dueAt` 경과는 상태 전이를 일으키지 않습니다.
 
 ### ExamSubmission.status
 

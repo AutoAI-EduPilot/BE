@@ -153,6 +153,35 @@ class StudentExamJpaTest {
 	}
 
 	@Test
+	void pastDueAtRemainsDisplayOnlyAndDoesNotBlockSubmission() {
+		Exam exam = Exam.create(
+			classroom,
+			1,
+			"Past due exam",
+			null,
+			false,
+			Instant.parse("2020-01-01T00:00:00Z")
+		);
+		exam.replaceTotalScore(new BigDecimal("10.00"));
+		exam.publish(Instant.parse("2026-08-03T00:00:00Z"));
+		exam = examRepository.saveAndFlush(exam);
+		questionRepository.saveAndFlush(mcq(exam, 1, "a"));
+
+		var result = studentExamService.submit(
+			learner.getId(),
+			UserRole.LEARNER,
+			exam.getId(),
+			new SubmitExamRequest(
+				"past-due-request",
+				List.of(new ExamAnswerRequest("q1", "a"))
+			)
+		);
+
+		assertThat(result.status()).isEqualTo(SubmissionStatus.GRADED);
+		assertThat(submissionRepository.countByExam_Id(exam.getId())).isEqualTo(1);
+	}
+
+	@Test
 	void hidesDraftAndRejectsUnknownDuplicateAndTypeMismatchedAnswers() {
 		Exam draft = examRepository.save(Exam.create(
 			classroom, null, "Draft", null, false

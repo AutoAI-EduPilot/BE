@@ -108,6 +108,9 @@ edupilot:
         core-size: 4
         max-size: 4
         queue-capacity: 100
+  notification:
+    exam-deadline:
+      enabled: ${EDUPILOT_NOTIFICATION_EXAM_DEADLINE_ENABLED:true}
   report:
     recent-window: P14D
     evidence-limit: 200

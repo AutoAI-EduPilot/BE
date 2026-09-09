@@ -26,6 +26,7 @@ import io.edupilot.exam.dto.SubmitExamRequest;
 import io.edupilot.ai.dto.GradeRequest;
 import io.edupilot.global.error.BusinessException;
 import io.edupilot.global.error.ErrorCode;
+import io.edupilot.notification.ExamNotificationDispatcher;
 import io.edupilot.quiz.DeterministicAnswerGrader;
 import io.edupilot.quiz.GradingVerdict;
 import io.edupilot.user.User;
@@ -54,6 +55,7 @@ public class ExamSubmissionPersistenceService {
 	private final UserRepository userRepository;
 	private final DeterministicAnswerGrader deterministicAnswerGrader;
 	private final ExamGradingDispatcher gradingDispatcher;
+	private final ExamNotificationDispatcher notificationDispatcher;
 	private final Clock clock;
 
 	public ExamSubmissionPersistenceService(
@@ -66,6 +68,7 @@ public class ExamSubmissionPersistenceService {
 		UserRepository userRepository,
 		DeterministicAnswerGrader deterministicAnswerGrader,
 		ExamGradingDispatcher gradingDispatcher,
+		ExamNotificationDispatcher notificationDispatcher,
 		Clock clock
 	) {
 		this.classroomService = classroomService;
@@ -77,6 +80,7 @@ public class ExamSubmissionPersistenceService {
 		this.userRepository = userRepository;
 		this.deterministicAnswerGrader = deterministicAnswerGrader;
 		this.gradingDispatcher = gradingDispatcher;
+		this.notificationDispatcher = notificationDispatcher;
 		this.clock = clock;
 	}
 
@@ -270,6 +274,14 @@ public class ExamSubmissionPersistenceService {
 		}
 		answerRepository.flush();
 		submissionRepository.flush();
+		if (!outcome.failed()) {
+			notificationDispatcher.gradedAfterCommit(
+				submission.getId(),
+				submission.getExamId(),
+				submission.getClassroomId(),
+				submission.getUserId()
+			);
+		}
 		return true;
 	}
 

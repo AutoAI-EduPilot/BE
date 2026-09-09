@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -18,8 +19,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Pageable;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import io.edupilot.classroom.Classroom;
@@ -39,6 +42,8 @@ class NotificationTriggerServiceTest {
 	private NotificationBulkRepository bulkRepository;
 	@Mock
 	private ClassroomNoticeRepository noticeRepository;
+	@Mock
+	private DeduplicatedNotificationWriter deduplicatedWriter;
 
 	private NotificationTriggerService service;
 	private Classroom classroom;
@@ -49,6 +54,7 @@ class NotificationTriggerServiceTest {
 		service = new NotificationTriggerService(
 			bulkRepository,
 			noticeRepository,
+			deduplicatedWriter,
 			Clock.fixed(NOW, ZoneOffset.UTC)
 		);
 		User instructor = user(1L, "teacher@example.com", "Teacher", UserRole.INSTRUCTOR);
@@ -155,6 +161,83 @@ class NotificationTriggerServiceTest {
 		verify(bulkRepository, never()).insertForClassroomMembers(
 			any(), any(), any(), any(), any(), any()
 		);
+	}
+
+	@Test
+	void examPublishedTargetsOnlySelectedLearnersWithCentralDedupKeys() {
+		when(bulkRepository.findClassroomLearnerUserIds(30L))
+			.thenReturn(List.of(2L, 3L));
+
+		assertThat(service.examPublished(30L, 80L, "Midterm")).isEqualTo(2);
+
+		ArgumentCaptor<Long> users = ArgumentCaptor.forClass(Long.class);
+		ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+		verify(deduplicatedWriter, times(2)).insert(
+			users.capture(),
+			eq(NotificationType.EXAM_PUBLISHED),
+			any(),
+			eq("Midterm"),
+			org.mockito.ArgumentMatchers.argThat(link ->
+				link.get("classroomId").equals(30L)
+					&& link.get("examId").equals(80L)
+			),
+			keys.capture(),
+			eq(NOW)
+		);
+		assertThat(users.getAllValues()).containsExactly(2L, 3L);
+		assertThat(keys.getAllValues()).containsExactly(
+			"EXAM_PUBLISHED:80:2",
+			"EXAM_PUBLISHED:80:3"
+		);
+	}
+
+	@Test
+	void deadlineWindowsUseKstDatesAndD3D1DedupKeys() {
+		Instant boundaryNow = Instant.parse("2026-08-14T15:30:00Z");
+		Instant d3From = Instant.parse("2026-08-17T15:00:00Z");
+		Instant d3Until = Instant.parse("2026-08-18T15:00:00Z");
+		Instant d1From = Instant.parse("2026-08-15T15:00:00Z");
+		Instant d1Until = Instant.parse("2026-08-16T15:00:00Z");
+		when(bulkRepository.findUnsubmittedExamDeadlineCandidates(
+			d3From, d3Until
+		)).thenReturn(List.of(new ExamDeadlineNotificationCandidate(
+			80L, 30L, "Midterm", 2L
+		)));
+		when(bulkRepository.findUnsubmittedExamDeadlineCandidates(
+			d1From, d1Until
+		)).thenReturn(List.of(new ExamDeadlineNotificationCandidate(
+			81L, 30L, "Final", 3L
+		)));
+
+		assertThat(service.publishExamDeadlineNotifications(boundaryNow)).isEqualTo(2);
+
+		ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+		verify(deduplicatedWriter, times(2)).insert(
+			any(),
+			eq(NotificationType.EXAM_DEADLINE_APPROACHING),
+			any(),
+			any(),
+			any(),
+			keys.capture(),
+			eq(boundaryNow)
+		);
+		assertThat(keys.getAllValues()).containsExactly(
+			"EXAM_DEADLINE:80:2:D3",
+			"EXAM_DEADLINE:81:3:D1"
+		);
+	}
+
+	@Test
+	void duplicateAndOtherNotificationFailuresAreFailSoft() {
+		when(bulkRepository.findClassroomLearnerUserIds(30L))
+			.thenReturn(List.of(2L, 3L));
+		doThrow(new DuplicateKeyException("duplicate"))
+			.doThrow(new IllegalStateException("storage unavailable"))
+			.when(deduplicatedWriter).insert(
+				any(), any(), any(), any(), any(), any(), any()
+			);
+
+		assertThat(service.examPublished(30L, 80L, "Midterm")).isZero();
 	}
 
 	private ClassroomNotice notice(Instant publishAt) {

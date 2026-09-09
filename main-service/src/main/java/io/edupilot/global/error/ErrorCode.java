@@ -246,6 +246,11 @@ public enum ErrorCode {
 		HttpStatus.BAD_REQUEST,
 		"시험 답안을 확인해 주세요."
 	),
+	INVALID_EXAM_DUE_AT(
+		"INVALID_EXAM_DUE_AT",
+		HttpStatus.BAD_REQUEST,
+		"시험 마감일은 현재보다 미래여야 합니다."
+	),
 	GRADING_RESULT_INVALID(
 		"GRADING_RESULT_INVALID",
 		HttpStatus.BAD_GATEWAY,
