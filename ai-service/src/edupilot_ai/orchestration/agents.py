@@ -91,7 +91,7 @@ class AgentResult:
     agent: str
     message: Message | None
     state_patch: dict[str, Any]
-    usage: LlmUsage
+    usage: LlmUsage | None
     quiz: QuizGeneration | None = None
     memory_candidates: list[dict[str, Any]] = field(default_factory=list)
     ui_actions: list[dict[str, Any]] = field(default_factory=list)
@@ -418,7 +418,7 @@ class NoteAgent:
         context: AgentContext,
         note_instruction: str,
         *,
-        timeout_seconds: float,
+        deadline: TurnDeadline,
     ) -> AgentResult:
         usages: list[LlmUsage] = []
         retry_reason: str | None = None
@@ -432,7 +432,7 @@ class NoteAgent:
                     ),
                     response_model=NoteDraft,
                     profile=self._profile,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=deadline.remaining_seconds(),
                 )
             except LlmBridgeError as error:
                 usages.append(error.usage or unknown_llm_usage(self._profile.model))

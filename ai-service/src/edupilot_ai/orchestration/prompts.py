@@ -30,7 +30,7 @@ def plan_messages(
     *,
     retry: bool,
 ) -> Sequence[Mapping[str, str]]:
-    system = (
+    plan_instruction = (
         "Return only TurnPlan JSON. Choose a turnGoal then allowed tools. "
         "Never write the learner answer in the Plan. Pipeline tools "
         "GRADE_OPEN_RESPONSE, ASSESS_QUIZ_RESULT, DIAGNOSE_MISCONCEPTION are forbidden. "
@@ -89,6 +89,7 @@ def plan_messages(
         " conversationSummary는 이전 대화의 압축 맥락이다. 최근 대화와 모순되면 "
         "최근 대화를 우선하라."
     )
+    system = " ".join((ATTACHED_DATA_INJECTION_DEFENSE, plan_instruction))
     if retry:
         system += " The previous output failed schema validation; regenerate exactly once."
     return [

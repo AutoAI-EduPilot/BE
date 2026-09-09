@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
+from edupilot_ai.core.async_iterators import closing_async_iterator
 from edupilot_ai.core.errors import ErrorCategory
 from edupilot_ai.core.logging import bind_log_context, reset_log_context
 from edupilot_ai.llm.bridge import (
@@ -154,7 +155,8 @@ class ToolDispatcher:
                     result.quiz = outcome.quiz
                 self._record_note_result(result, outcome)
                 self._record_memory_result(result, action, outcome)
-                result.usages.append(outcome.usage)
+                if outcome.usage is not None:
+                    result.usages.append(outcome.usage)
                 logger.info(
                     "tool action completed",
                     extra={
@@ -217,22 +219,23 @@ class ToolDispatcher:
                     stream = self._agent_stream(action, context, deadline)
                     content: list[str] = []
                     usage: LlmUsage | None = None
-                    async for item in stream.items:
-                        if isinstance(item, LlmTextDelta):
-                            if usage is not None:
+                    async with closing_async_iterator(stream.items):
+                        async for item in stream.items:
+                            if isinstance(item, LlmTextDelta):
+                                if usage is not None:
+                                    raise LlmBridgeError(
+                                        category=ErrorCategory.SCHEMA,
+                                        retryable=False,
+                                    )
+                                content.append(item.text)
+                                yield DispatchTextDelta(text=item.text)
+                            elif usage is None:
+                                usage = item.usage
+                            else:
                                 raise LlmBridgeError(
                                     category=ErrorCategory.SCHEMA,
                                     retryable=False,
                                 )
-                            content.append(item.text)
-                            yield DispatchTextDelta(text=item.text)
-                        elif usage is None:
-                            usage = item.usage
-                        else:
-                            raise LlmBridgeError(
-                                category=ErrorCategory.SCHEMA,
-                                retryable=False,
-                            )
                     if usage is None or not content:
                         raise LlmBridgeError(
                             category=ErrorCategory.SCHEMA,
@@ -271,7 +274,8 @@ class ToolDispatcher:
                     result.quiz = outcome.quiz
                 self._record_note_result(result, outcome)
                 self._record_memory_result(result, action, outcome)
-                result.usages.append(outcome.usage)
+                if outcome.usage is not None:
+                    result.usages.append(outcome.usage)
                 logger.info(
                     "tool action completed",
                     extra={
@@ -361,7 +365,7 @@ class ToolDispatcher:
             return await self._note.run(
                 context,
                 str(action.args["noteInstruction"]),
-                timeout_seconds=deadline.remaining_seconds(),
+                deadline=deadline,
             )
         if action.tool is ToolName.BUILD_MEMORY_CANDIDATE:
             candidate = {
@@ -376,7 +380,7 @@ class ToolDispatcher:
                 agent="LearnerMemoryService",
                 message=None,
                 state_patch={},
-                usage=LlmUsage(self._model, 0, 0, None),
+                usage=None,
                 memory_candidates=[candidate],
             )
         if action.tool is ToolName.PROMOTE_MEMORY:
@@ -384,14 +388,14 @@ class ToolDispatcher:
                 agent="LearnerMemoryService",
                 message=None,
                 state_patch={},
-                usage=LlmUsage(self._model, 0, 0, None),
+                usage=None,
             )
         if action.tool is ToolName.PROMPT_BINARY_DECISION:
             return AgentResult(
                 agent="UiActionResolver",
                 message=None,
                 state_patch={},
-                usage=LlmUsage(self._model, 0, 0, None),
+                usage=None,
                 ui_actions=[
                     {
                         "type": "BINARY_DECISION",

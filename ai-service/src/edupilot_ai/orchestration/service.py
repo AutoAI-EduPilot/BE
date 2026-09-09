@@ -6,6 +6,11 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from http import HTTPStatus
 
+from edupilot_ai.core.async_iterators import (
+    cancel_and_wait,
+    closing_async_iterator,
+    shielded_aclose,
+)
 from edupilot_ai.core.errors import ErrorCategory, InternalApiError
 from edupilot_ai.llm.bridge import LlmBridgeError, LlmUsage
 from edupilot_ai.models.base import Usage
@@ -93,10 +98,11 @@ async def events_with_heartbeat(
     *,
     first_event_timeout_seconds: float,
     heartbeat_interval_seconds: float,
-) -> AsyncIterator[TurnStreamEvent]:
+) -> AsyncGenerator[TurnStreamEvent]:
     """Enforce first-event latency and emit heartbeats while one event is pending."""
     pending: asyncio.Task[TurnStreamEvent] | None = None
     first_event = True
+    events_can_close = True
     try:
         while True:
             if pending is None:
@@ -105,9 +111,10 @@ async def events_with_heartbeat(
             done, _ = await asyncio.wait({pending}, timeout=timeout)
             if not done:
                 if first_event:
-                    pending.cancel()
-                    await asyncio.gather(pending, return_exceptions=True)
+                    timed_out_pending = pending
                     pending = None
+                    events_can_close = False
+                    events_can_close = await cancel_and_wait(timed_out_pending)
                     yield ErrorStreamEvent(
                         code="AI_SERVICE_TIMEOUT",
                         category=ErrorCategory.TIMEOUT,
@@ -125,12 +132,24 @@ async def events_with_heartbeat(
             first_event = False
             yield event
             if isinstance(event, (CompletedStreamEvent, ErrorStreamEvent)):
-                await events.aclose()
                 return
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
-            await asyncio.gather(pending, return_exceptions=True)
+        cancellation: asyncio.CancelledError | None = None
+        can_close_events = events_can_close and pending is None
+        if pending is not None:
+            try:
+                can_close_events = await cancel_and_wait(pending)
+            except asyncio.CancelledError as error:
+                cancellation = error
+                can_close_events = pending.done()
+            pending = None
+        if can_close_events:
+            try:
+                await shielded_aclose(events)
+            except asyncio.CancelledError as error:
+                cancellation = error
+        if cancellation is not None:
+            raise cancellation
 
 
 class TurnService:
@@ -195,15 +214,16 @@ class TurnService:
             usages=[*plan_usages, *dispatched.usages],
         )
 
-    async def stream_ndjson(self, turn: TurnRequest) -> AsyncIterator[str]:
+    async def stream_ndjson(self, turn: TurnRequest) -> AsyncGenerator[str]:
         """Serialize the standard stream as one JSON object per line."""
         events = events_with_heartbeat(
             self.stream_events(turn),
             first_event_timeout_seconds=self._first_event_timeout_seconds,
             heartbeat_interval_seconds=self._heartbeat_interval_seconds,
         )
-        async for event in events:
-            yield event.model_dump_json(by_alias=True) + "\n"
+        async with closing_async_iterator(events):
+            async for event in events:
+                yield event.model_dump_json(by_alias=True) + "\n"
 
     async def stream_events(
         self,
@@ -251,17 +271,19 @@ class TurnService:
                 )
 
             dispatched: DispatchResult | None = None
-            async for item in self._dispatcher.dispatch_stream(
+            dispatch_stream = self._dispatcher.dispatch_stream(
                 plan,
                 context,
                 adjustments,
                 deadline,
-            ):
-                if isinstance(item, DispatchTextDelta):
-                    emitted_content.append(item.text)
-                    yield ContentDeltaStreamEvent(text=item.text)
-                elif isinstance(item, DispatchStreamCompleted):
-                    dispatched = item.result
+            )
+            async with closing_async_iterator(dispatch_stream):
+                async for item in dispatch_stream:
+                    if isinstance(item, DispatchTextDelta):
+                        emitted_content.append(item.text)
+                        yield ContentDeltaStreamEvent(text=item.text)
+                    elif isinstance(item, DispatchStreamCompleted):
+                        dispatched = item.result
             if dispatched is None:
                 raise RuntimeError("dispatcher stream did not terminate")
             self._raise_dispatch_failure(dispatched)

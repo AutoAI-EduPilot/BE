@@ -1,6 +1,9 @@
 """LlmBridge protocol and profile configuration tests."""
 
-from pydantic import BaseModel
+from pathlib import Path
+
+import pytest
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from edupilot_ai.llm.bridge import LlmBridge
 from edupilot_ai.settings import AgentLlmProfile, ReasoningEffort, Settings
@@ -43,3 +46,87 @@ async def test_fake_llm_satisfies_protocol_and_uses_profile(settings: Settings) 
         "maxTokens": 16_384,
         "temperature": None,
     }
+
+
+def test_role_profiles_apply_independent_token_overrides() -> None:
+    settings = Settings(
+        _env_file=None,
+        edupilot_internal_token=SecretStr("contract-test-token"),
+        xai_api_key=SecretStr("xai-test-not-real"),
+        model_name="grok-4.5",
+        agent_max_tokens=16_384,
+        orchestrator_max_tokens=4096,
+        qa_max_tokens=4096,
+        quiz_max_tokens=12_288,
+    )
+
+    assert settings.orchestrator_llm_profile == AgentLlmProfile(
+        model="grok-4.5",
+        reasoning_effort=ReasoningEffort.LOW,
+        max_tokens=4096,
+    )
+    assert settings.qa_llm_profile == AgentLlmProfile(
+        model="grok-4.5",
+        reasoning_effort=ReasoningEffort.LOW,
+        max_tokens=4096,
+    )
+    assert settings.quiz_llm_profile == AgentLlmProfile(
+        model="grok-4.5",
+        reasoning_effort=ReasoningEffort.MEDIUM,
+        max_tokens=12_288,
+    )
+    assert settings.note_llm_profile == AgentLlmProfile(
+        model="grok-4.5",
+        reasoning_effort=ReasoningEffort.MEDIUM,
+        max_tokens=16_384,
+    )
+
+
+def test_role_profiles_fall_back_to_global_model_and_token_budget(
+    settings: Settings,
+) -> None:
+    assert settings.agent_max_tokens == 16_384
+    assert settings.orchestrator_llm_profile.max_tokens == settings.agent_max_tokens
+    assert settings.qa_llm_profile.max_tokens == settings.agent_max_tokens
+    assert settings.quiz_llm_profile.max_tokens == settings.agent_max_tokens
+
+
+@pytest.mark.parametrize("example_path", [".env.example", "ai-service/.env.example"])
+def test_example_profiles_preserve_original_token_budget(
+    example_path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for environment_name in (
+        "AGENT_MAX_TOKENS",
+        "ORCHESTRATOR_MAX_TOKENS",
+        "QA_MAX_TOKENS",
+        "QUIZ_MAX_TOKENS",
+    ):
+        monkeypatch.delenv(environment_name, raising=False)
+    repository = Path(__file__).resolve().parents[2]
+    settings = Settings(_env_file=repository / example_path)
+
+    assert settings.orchestrator_llm_profile.max_tokens == 16_384
+    assert settings.qa_llm_profile.max_tokens == 16_384
+    assert settings.quiz_llm_profile.max_tokens == 16_384
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    [
+        "ORCHESTRATOR_MAX_TOKENS",
+        "QA_MAX_TOKENS",
+        "QUIZ_MAX_TOKENS",
+    ],
+)
+def test_role_token_overrides_reject_zero(
+    environment_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(environment_name, "0")
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            edupilot_internal_token=SecretStr("contract-test-token"),
+            xai_api_key=SecretStr("xai-test-not-real"),
+        )
