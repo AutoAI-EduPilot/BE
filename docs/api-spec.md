@@ -101,6 +101,7 @@
 | POST | `/api/exams/{examId}/publish` | 시험 공개 | Y | 소유 INSTRUCTOR |
 | POST | `/api/exams/{examId}/close` | 시험 마감 | Y | 소유 INSTRUCTOR |
 | DELETE | `/api/exams/{examId}` | DRAFT 시험 삭제 | Y | 소유 INSTRUCTOR |
+| POST | `/api/exams/{examId}/attempts/start` | 시험 응시 시작 시각 기록 | Y | 승인 LEARNER 멤버 |
 | POST | `/api/exams/{examId}/submissions` | 별도 시험 제출 | Y | 승인 멤버 |
 | GET | `/api/exams/{examId}/submissions` | 시험별 최신 대표 제출 목록 | Y | 소유 INSTRUCTOR |
 | GET | `/api/exams/{examId}/submissions/{submissionId}` | 특정 시험 제출 상세 | Y | 소유 INSTRUCTOR |
@@ -1224,10 +1225,26 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 | --- | --- | --- |
 | GET | `/api/classrooms/{classroomId}/exams?page&size` | PUBLISHED·CLOSED 목록, nullable `dueAt`, 본인 최신 제출 요약·`submittable`을 반환합니다. GRADING_FAILED 최신 시도는 재제출 가능으로 계산합니다. |
 | GET | `/api/exams/{examId}` | 공개 문항, nullable `dueAt`, `submittable`만 반환합니다. |
+| POST | `/api/exams/{examId}/attempts/start` | PUBLISHED 시험의 응시 시작 시각을 기록합니다. 동일 시험·사용자의 미소비 기록이 있으면 같은 `startedAt`을 반환합니다. |
 | POST | `/api/exams/{examId}/submissions` | PUBLISHED 시험을 제출합니다. 주관식 AI 채점이 필요하면 `SUBMITTED`/202, 아니면 `GRADED`/200입니다. 두 응답은 같은 봉투와 `ExamSubmissionResponse` 스키마입니다. |
-| GET | `/api/exams/{examId}/submissions/me?attemptNo=` | 본인 결과를 조회하며 attemptNo 생략 시 최신 시도입니다. |
+| GET | `/api/exams/{examId}/submissions/me?attemptNo=` | 본인 결과를 조회하며 attemptNo 생략 시 최신 시도입니다. 공개 정책과 응시 시간 필드를 포함합니다. |
 
-학생 문항 DTO는 `questionId`, `questionText`, `maxScore`, `questionType`, `options`만 포함합니다. 정답·해설·모범 답안·rubric은 DEC-031 D4 확정 전까지 제출 후에도 반환하지 않습니다.
+학생 시험 목록·상세의 문항 DTO는 `questionId`, `questionText`, `maxScore`, `questionType`, `options`만 포함합니다. 본인 결과 조회에서만 `reviewAvailable=true`일 때 문항별 `correctAnswer`, `explanation`을 추가하며 `rubric`과 비공개 정답 원본은 항상 제외합니다.
+
+응시 화면 진입 시 한 번 호출합니다. 같은 시험·사용자의 시작 기록은 제출 성공 시까지 유지되므로 새로고침·재진입·동시 호출로 시간이 초기화되지 않습니다.
+
+```json
+{
+  "success": true,
+  "data": {
+    "startedAt": "2026-08-02T11:58:30Z"
+  },
+  "error": null
+}
+```
+
+- LEARNER 승인 멤버와 PUBLISHED 시험만 시작할 수 있습니다. DRAFT는 `EXAM_NOT_FOUND`(404)로 은닉하고 CLOSED는 `EXAM_NOT_PUBLISHED`(409)로 거부합니다.
+- 시작 API를 호출하지 않은 구버전 클라이언트도 제출할 수 있으며, 이 경우 결과의 `startedAt`, `durationSeconds`는 null입니다.
 
 제출 요청:
 
@@ -1248,7 +1265,7 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 - 최신 제출이 `GRADED`이면 `allowRetake=false`에서 새 requestId를 거부하고, `allowRetake=true`이면 다음 attemptNo를 생성합니다. `GRADING_FAILED`는 응시권을 소모하지 않아 allowRetake와 무관하게 새 requestId로 다음 attempt를 생성할 수 있습니다.
 - DRAFT 제출은 `EXAM_NOT_FOUND`(404)로 은닉하고 CLOSED 제출은 `EXAM_NOT_PUBLISHED`(409)로 거부합니다.
 
-제출·본인 결과 응답의 공통 형태:
+제출 응답의 형태:
 
 ```json
 {
@@ -1273,9 +1290,47 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 }
 ```
 
+본인 결과 조회는 제출 응답 필드에 다음 필드를 추가합니다.
+
+```json
+{
+  "submissionId": 300,
+  "attemptNo": 1,
+  "status": "GRADED",
+  "reviewAvailable": true,
+  "score": 80.00,
+  "maxScore": 100.00,
+  "normalizedScore": 80.00,
+  "startedAt": "2026-08-02T11:58:30Z",
+  "durationSeconds": 90,
+  "submittedAt": "2026-08-02T12:00:00Z",
+  "gradedAt": "2026-08-02T12:00:01Z",
+  "items": [
+    {
+      "questionId": "q1",
+      "answer": "a",
+      "score": 20.00,
+      "maxScore": 20.00,
+      "verdict": "CORRECT",
+      "feedback": null,
+      "correctAnswer": {
+        "choiceId": "a",
+        "text": "정답 선택지"
+      },
+      "explanation": "정답 해설"
+    }
+  ]
+}
+```
+
+- `reviewAvailable = exam.status == CLOSED || (!exam.allowRetake && submission.status == GRADED)`입니다.
+- `reviewAvailable=false`이면 각 item의 `correctAnswer`, `explanation` 키를 null로 보내지 않고 응답에서 완전히 생략합니다.
+- `correctAnswer`는 MCQ에서 `{choiceId,text}`, OX에서 boolean, SHORT/ESSAY에서 `modelAnswer` 우선·없으면 `referenceAnswer` 문자열이며 둘 다 없으면 null입니다.
+- `startedAt`과 `durationSeconds`는 제출이 소비한 시작 기록을 나타냅니다. 기존 제출이나 시작 API 미호출 제출은 둘 다 null이며 FE는 `-`로 표시합니다.
+
 - HTTP 202 응답 본문은 200과 동일한 API envelope 및 `ExamSubmissionResponse` 스키마입니다. FE는 HTTP 상태코드가 아니라 응답의 `status` 필드로 화면과 polling 여부를 분기합니다.
 - `SUBMITTED`에서는 `score`, `normalizedScore`, `gradedAt`과 모든 문항의 `score`, `verdict`, `feedback`을 null로 반환합니다. MCQ/OX 결과가 내부에서 이미 계산됐어도 terminal 상태 전에는 마스킹합니다. `answer`, `maxScore`, `questionId=q{questionNo}`는 유지합니다.
-- 학생 목록·상세·제출 결과에는 `answerChoiceId`, `answerValue`, `explanation`, `referenceAnswer`, `modelAnswer`, `rubric`, `privateAnswer`, `isCorrect` 키를 포함하지 않습니다.
+- 학생 목록·상세와 POST 제출 응답에는 `correctAnswer`, `explanation`을 포함하지 않습니다. 본인 결과 GET도 명시적 `correctAnswer`, `explanation` 외에 `answerChoiceId`, `answerValue`, `referenceAnswer`, `modelAnswer`, `rubric`, `privateAnswer`, `isCorrect` 키를 포함하지 않습니다.
 - POST가 `SUBMITTED`를 반환하면 기존 `GET /api/exams/{examId}/submissions/me`를 2초 간격으로 polling하고, 30초 뒤 5초 간격으로 전환합니다. `GRADED | GRADING_FAILED`에서 즉시 중단합니다. 31분을 넘기면 채점 지연 안내를 표시하되 polling은 유지하고, 세 번의 30분 채점 창과 scheduler 지연을 포함한 91분을 넘겨도 `SUBMITTED`이면 마지막 조회 후 중단하고 문의 안내를 표시합니다.
 
 #### 채점·실패 계약
