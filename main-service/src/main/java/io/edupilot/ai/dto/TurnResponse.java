@@ -18,6 +18,25 @@ public record TurnResponse(
 	AiUsage usage
 ) {
 
+	public boolean isDirectNote(String eventType) {
+		return "USER_QUESTION".equals(eventType) && hasNoteResponseShape();
+	}
+
+	public boolean hasNoteResponseShape() {
+		if (!"WRITE_NOTE".equals(turnGoal)
+			|| noteDraft == null
+			|| statePatch == null
+			|| !statePatch.isEmpty()
+			|| quiz != null
+			|| messages == null
+			|| messages.size() != 1) {
+			return false;
+		}
+		Map<String, Object> message = messages.getFirst();
+		return message != null
+			&& "SYSTEM".equals(message.get("messageType"));
+	}
+
 	public TurnResponse(
 		String schemaVersion,
 		String turnId,
