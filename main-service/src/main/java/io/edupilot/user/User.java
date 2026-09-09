@@ -74,6 +74,9 @@ public class User {
 	@Column(nullable = false, length = 20)
 	private UserStatus status;
 
+	@Column(name = "last_active_at")
+	private Instant lastActiveAt;
+
 	@CreationTimestamp
 	@Column(name = "created_at", nullable = false, updatable = false)
 	private Instant createdAt;
@@ -301,6 +304,10 @@ public class User {
 
 	public Instant getCreatedAt() {
 		return createdAt;
+	}
+
+	public Instant getLastActiveAt() {
+		return lastActiveAt;
 	}
 
 	public boolean isActive() {

@@ -22,6 +22,7 @@ import io.edupilot.auth.dto.SignupResponse;
 import io.edupilot.global.error.BusinessException;
 import io.edupilot.global.error.ErrorCode;
 import io.edupilot.user.User;
+import io.edupilot.user.UserActivityTracker;
 import io.edupilot.user.UserRepository;
 import io.edupilot.user.dto.UserResponse;
 
@@ -38,6 +39,7 @@ public class AuthService {
 	private final RefreshTokenService refreshTokenService;
 	private final GoogleIdTokenVerifier googleIdTokenVerifier;
 	private final GoogleAccountService googleAccountService;
+	private final UserActivityTracker userActivityTracker;
 	private final Clock clock;
 
 	public AuthService(
@@ -47,6 +49,7 @@ public class AuthService {
 		RefreshTokenService refreshTokenService,
 		GoogleIdTokenVerifier googleIdTokenVerifier,
 		GoogleAccountService googleAccountService,
+		UserActivityTracker userActivityTracker,
 		Clock clock
 	) {
 		this.userRepository = userRepository;
@@ -55,6 +58,7 @@ public class AuthService {
 		this.refreshTokenService = refreshTokenService;
 		this.googleIdTokenVerifier = googleIdTokenVerifier;
 		this.googleAccountService = googleAccountService;
+		this.userActivityTracker = userActivityTracker;
 		this.clock = clock;
 	}
 
@@ -123,6 +127,7 @@ public class AuthService {
 			TOKEN_TYPE,
 			jwtTokenProvider.accessTokenExpiresInSeconds()
 		);
+		userActivityTracker.track(rotation.user().getId());
 		return new RefreshResult(response, rotation.rawToken());
 	}
 

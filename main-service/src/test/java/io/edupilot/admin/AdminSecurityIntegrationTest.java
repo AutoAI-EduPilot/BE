@@ -1,5 +1,6 @@
 package io.edupilot.admin;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -117,6 +118,20 @@ class AdminSecurityIntegrationTest {
 				.header(HttpHeaders.AUTHORIZATION, bearer(admin)))
 			.andExpect(status().isOk())
 			.andExpect(jsonPath("$.data").value("pong"));
+	}
+
+	@Test
+	void authenticatedRequestRecordsLastActivity() throws Exception {
+		User learner = saveUser(UserRole.LEARNER);
+		assertThat(userRepository.findById(learner.getId()).orElseThrow()
+			.getLastActiveAt()).isNull();
+
+		mockMvc.perform(get("/api/users/me")
+				.header(HttpHeaders.AUTHORIZATION, bearer(learner)))
+			.andExpect(status().isOk());
+
+		assertThat(userRepository.findById(learner.getId()).orElseThrow()
+			.getLastActiveAt()).isNotNull();
 	}
 
 	@Test

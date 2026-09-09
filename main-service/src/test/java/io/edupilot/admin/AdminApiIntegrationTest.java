@@ -94,6 +94,7 @@ class AdminApiIntegrationTest {
 	@Autowired private ClassroomMemberRepository memberRepository;
 	@Autowired private AiUsageLogRepository usageLogRepository;
 	@Autowired private AdminClassroomService adminClassroomService;
+	@Autowired private AdminUserService adminUserService;
 	@Autowired private JdbcTemplate jdbcTemplate;
 	@Autowired private EntityManager entityManager;
 	@Autowired private EntityManagerFactory entityManagerFactory;
@@ -654,6 +655,97 @@ class AdminApiIntegrationTest {
 
 	private String bearer(User user) {
 		return "Bearer " + jwtTokenProvider.createAccessToken(user);
+	}
+
+	@Test
+	void userListReturnsLastActiveAtAndNullForNoActivity() throws Exception {
+		Instant lastActiveAt = Instant.parse("2026-09-01T02:03:04Z");
+		userRepository.updateLastActiveAt(instructor.getId(), lastActiveAt);
+		entityManager.clear();
+
+		mockMvc.perform(get("/api/admin/users")
+				.header(HttpHeaders.AUTHORIZATION, bearer(admin))
+				.param("q", "instructor@example.com"))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.items[0].lastActiveAt")
+				.value("2026-09-01T02:03:04Z"));
+
+		mockMvc.perform(get("/api/admin/users")
+				.header(HttpHeaders.AUTHORIZATION, bearer(admin))
+				.param("q", "learner@example.com"))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.items[0].lastActiveAt")
+				.value(org.hamcrest.Matchers.nullValue()));
+	}
+
+	@Test
+	void sortsUsersByRecentActivityWithNullsLastInBothDirections() {
+		userRepository.updateLastActiveAt(
+			learner.getId(),
+			Instant.parse("2026-09-01T00:00:00Z")
+		);
+		userRepository.updateLastActiveAt(
+			instructor.getId(),
+			Instant.parse("2026-09-02T00:00:00Z")
+		);
+		entityManager.clear();
+
+		var descending = adminUserService.list(
+			null,
+			null,
+			null,
+			AdminUserSort.RECENT_ACTIVITY_DESC,
+			0,
+			10
+		);
+		var ascending = adminUserService.list(
+			null,
+			null,
+			null,
+			AdminUserSort.RECENT_ACTIVITY_ASC,
+			0,
+			10
+		);
+
+		assertThat(descending.items()).extracting(item -> item.id())
+			.containsExactly(
+				instructor.getId(),
+				learner.getId(),
+				deletedUser.getId(),
+				admin.getId()
+			);
+		assertThat(ascending.items()).extracting(item -> item.id())
+			.containsExactly(
+				learner.getId(),
+				instructor.getId(),
+				admin.getId(),
+				deletedUser.getId()
+			);
+	}
+
+	@Test
+	void recentUserSortRemainsBasedOnCreatedAt() {
+		userRepository.updateLastActiveAt(
+			instructor.getId(),
+			Instant.parse("2099-01-01T00:00:00Z")
+		);
+		jdbcTemplate.update(
+			"update users set created_at = ? where id = ?",
+			Timestamp.valueOf("2098-01-01 00:00:00"),
+			learner.getId()
+		);
+		entityManager.clear();
+
+		var response = adminUserService.list(
+			null,
+			null,
+			null,
+			AdminUserSort.RECENT,
+			0,
+			10
+		);
+
+		assertThat(response.items().get(0).id()).isEqualTo(learner.getId());
 	}
 
 	private String logText(ILoggingEvent event) {

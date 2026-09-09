@@ -57,7 +57,7 @@ public class AdminUserService {
 		String query,
 		UserRole role,
 		UserStatus status,
-		AdminListSort sort,
+		AdminUserSort sort,
 		int page,
 		int size
 	) {
@@ -126,14 +126,22 @@ public class AdminUserService {
 		return query.trim().toLowerCase(Locale.ROOT);
 	}
 
-	private Sort userSort(AdminListSort sort) {
-		return switch (sort == null ? AdminListSort.RECENT : sort) {
+	private Sort userSort(AdminUserSort sort) {
+		return switch (sort == null ? AdminUserSort.RECENT : sort) {
 			case RECENT -> Sort.by(
 				Sort.Order.desc("createdAt"),
 				Sort.Order.desc("id")
 			);
 			case NAME -> Sort.by(
 				Sort.Order.asc("name"),
+				Sort.Order.asc("id")
+			);
+			case RECENT_ACTIVITY_DESC -> Sort.by(
+				Sort.Order.desc("lastActiveAt").nullsLast(),
+				Sort.Order.desc("id")
+			);
+			case RECENT_ACTIVITY_ASC -> Sort.by(
+				Sort.Order.asc("lastActiveAt").nullsLast(),
 				Sort.Order.asc("id")
 			);
 		};

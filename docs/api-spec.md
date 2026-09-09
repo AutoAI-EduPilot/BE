@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 상태 | 계약 초안 |
-| 마지막 갱신 | 2026-09-01 |
+| 마지막 갱신 | 2026-09-09 |
 | 외부 호출자 | Frontend |
 | 내부 호출자 | Spring → FastAPI |
 
@@ -2275,18 +2275,30 @@ evidence는 결과가 참조한 항목만 `evidenceId`, `sourceType`, `publicLab
 - `q`: 이메일 또는 이름 부분일치, 대소문자 무시
 - `role`: 선택 `ADMIN | INSTRUCTOR | LEARNER`
 - `status`: 선택 `ACTIVE | DELETED`; 생략하면 탈퇴 사용자를 포함한 전체
-- `sort`: `RECENT` 기본(`createdAt DESC, id DESC`) 또는 `NAME`
+- `sort`: `RECENT` 기본(`createdAt DESC, id DESC`), `NAME`,
+  `RECENT_ACTIVITY_DESC`, `RECENT_ACTIVITY_ASC`
 - `page`/`size`: 기본 0/20, size 최대 100
 
 목록은 `items`, `page`, `size`, `totalElements`, `totalPages`를 반환합니다. 각 item은
-`id`, `email`, `name`, `role`, `status`, `authProvider`, `createdAt`만 포함합니다.
+`id`, `email`, `name`, `role`, `status`, `authProvider`, `createdAt`,
+`lastActiveAt`을 포함합니다. `lastActiveAt`은 인증된 API 요청 시각이며
+`/api/auth/refresh` 성공도 활동에 포함합니다. 값은 ISO 8601 UTC이고, 활동 근거가 없으면
+`null`입니다. 같은 사용자의 DB 갱신은 5분에 한 번으로 제한하므로 상대 시간 표시는 최대
+5분의 오차가 있을 수 있습니다.
+
+`RECENT_ACTIVITY_DESC`는 `lastActiveAt DESC, id DESC`,
+`RECENT_ACTIVITY_ASC`는 `lastActiveAt ASC, id ASC`입니다. 두 방향 모두
+`lastActiveAt=null`인 사용자를 마지막에 배치합니다. 기존 `RECENT`는 가입일 기준 의미를
+유지합니다.
+
 `passwordHash`, `googleSub`, refresh token 등 크리덴셜 필드는 관리자 DTO에 정의하지 않아
 직렬화 경로 자체에서 차단합니다.
 
 ### GET `/api/admin/users/{id}`
 
-목록 필드에 `affiliation`, `consentedAt`을 추가한 상세를 반환합니다. 없는 사용자는
-`USER_NOT_FOUND`(404)입니다.
+`id`, `email`, `name`, `role`, `status`, `authProvider`, `createdAt`,
+`affiliation`, `consentedAt`을 반환합니다. `lastActiveAt` 추가 범위는 회원 목록 item입니다.
+없는 사용자는 `USER_NOT_FOUND`(404)입니다.
 
 ### POST `/api/admin/users/{id}/password-reset`
 
