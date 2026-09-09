@@ -19,6 +19,7 @@ import io.edupilot.global.error.ErrorCode;
 import io.edupilot.material.storage.FileStorage;
 import io.edupilot.material.storage.StorageException;
 import io.edupilot.user.dto.AvatarResponse;
+import io.edupilot.user.dto.PasswordChangeResponse;
 import io.edupilot.user.dto.UpdateProfileRequest;
 import io.edupilot.user.dto.UpdatePreferencesRequest;
 import io.edupilot.user.dto.UserPreferencesResponse;
@@ -45,19 +46,22 @@ public class UserService {
 	private final RefreshTokenService refreshTokenService;
 	private final List<UserWithdrawalHook> withdrawalHooks;
 	private final FileStorage fileStorage;
+	private final PasswordChangeAttemptLimiter passwordChangeAttemptLimiter;
 
 	public UserService(
 		UserRepository userRepository,
 		PasswordEncoder passwordEncoder,
 		RefreshTokenService refreshTokenService,
 		List<UserWithdrawalHook> withdrawalHooks,
-		FileStorage fileStorage
+		FileStorage fileStorage,
+		PasswordChangeAttemptLimiter passwordChangeAttemptLimiter
 	) {
 		this.userRepository = userRepository;
 		this.passwordEncoder = passwordEncoder;
 		this.refreshTokenService = refreshTokenService;
 		this.withdrawalHooks = withdrawalHooks;
 		this.fileStorage = fileStorage;
+		this.passwordChangeAttemptLimiter = passwordChangeAttemptLimiter;
 	}
 
 	@Transactional(readOnly = true)
@@ -81,6 +85,32 @@ public class UserService {
 			: normalizeOptional(request.affiliation());
 		user.updateProfile(name, affiliation);
 		return UserResponse.from(user);
+	}
+
+	@Transactional
+	public PasswordChangeResponse changePassword(
+		Long userId,
+		String currentPassword,
+		String newPassword
+	) {
+		User user = activeUser(userId);
+		if (user.getAuthProvider() != AuthProvider.LOCAL) {
+			throw new BusinessException(ErrorCode.PASSWORD_NOT_SUPPORTED);
+		}
+		passwordChangeAttemptLimiter.checkAllowed(userId);
+		if (!passwordEncoder.matches(currentPassword, user.getPasswordHash())) {
+			passwordChangeAttemptLimiter.recordFailure(userId);
+			throw new BusinessException(ErrorCode.CURRENT_PASSWORD_MISMATCH);
+		}
+		if (newPassword.equals(currentPassword)) {
+			throw new BusinessException(ErrorCode.PASSWORD_REUSE_NOT_ALLOWED);
+		}
+
+		user.changePassword(passwordEncoder.encode(newPassword));
+		userRepository.flush();
+		refreshTokenService.revokeAll(userId);
+		passwordChangeAttemptLimiter.reset(userId);
+		return new PasswordChangeResponse(true);
 	}
 
 	@Transactional(readOnly = true)

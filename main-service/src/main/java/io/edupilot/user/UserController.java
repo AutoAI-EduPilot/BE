@@ -19,6 +19,8 @@ import org.springframework.web.multipart.MultipartFile;
 import io.edupilot.auth.AuthenticatedUser;
 import io.edupilot.global.response.ApiResponse;
 import io.edupilot.user.dto.AvatarResponse;
+import io.edupilot.user.dto.ChangePasswordRequest;
+import io.edupilot.user.dto.PasswordChangeResponse;
 import io.edupilot.user.dto.UpdateProfileRequest;
 import io.edupilot.user.dto.UpdatePreferencesRequest;
 import io.edupilot.user.dto.UserPreferencesResponse;
@@ -59,6 +61,22 @@ public class UserController {
 			authenticatedUser.userId(),
 			request
 		));
+	}
+
+	@PatchMapping("/me/password")
+	@Operation(summary = "내 비밀번호 변경")
+	public ResponseEntity<ApiResponse<PasswordChangeResponse>> changePassword(
+		@AuthenticationPrincipal AuthenticatedUser authenticatedUser,
+		@Valid @RequestBody ChangePasswordRequest request
+	) {
+		PasswordChangeResponse response = userService.changePassword(
+			authenticatedUser.userId(),
+			request.currentPassword(),
+			request.newPassword()
+		);
+		return ResponseEntity.ok()
+			.cacheControl(CacheControl.noStore().cachePrivate())
+			.body(ApiResponse.success(response));
 	}
 
 	@GetMapping("/me/preferences")

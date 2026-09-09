@@ -182,6 +182,10 @@ public class User {
 		this.googleSub = googleSub;
 	}
 
+	public void changePassword(String passwordHash) {
+		this.passwordHash = passwordHash;
+	}
+
 	public void withdraw() {
 		this.email = "deleted_" + id;
 		this.name = "탈퇴 사용자";
