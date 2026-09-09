@@ -99,19 +99,27 @@ public class TurnPersistenceService {
 		if (!requestId.equals(session.getActiveTurnRequestId())) {
 			throw new BusinessException(ErrorCode.SESSION_STATE_CONFLICT);
 		}
+		boolean directNote = aiResponse.isDirectNote(eventType.name());
+		if (eventType == TurnEventType.USER_QUESTION
+			&& "WRITE_NOTE".equals(aiResponse.turnGoal())
+			&& !directNote) {
+			throw policy();
+		}
 
 		PageStatus previousPageStatus = session.getPageStatus();
 		List<ChatMessage> aiMessages = saveAiMessages(
 			session,
 			aiResponse.messages()
 		);
-		applyQaThread(
-			session,
-			eventType,
-			userMessageId,
-			aiMessages,
-			aiResponse.statePatch()
-		);
+		if (!directNote) {
+			applyQaThread(
+				session,
+				eventType,
+				userMessageId,
+				aiMessages,
+				aiResponse.statePatch()
+			);
+		}
 
 		PageStatus nextPageStatus = pageStatus(aiResponse.statePatch());
 		validatePendingDiagnosis(

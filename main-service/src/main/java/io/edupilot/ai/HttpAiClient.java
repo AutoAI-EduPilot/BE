@@ -409,6 +409,7 @@ public class HttpAiClient implements AiClient {
 			TurnResponse completed = null;
 			AiClientException terminalError = null;
 			StringBuilder deltas = new StringBuilder();
+			int contentDeltaCount = 0;
 			boolean terminalSeen = false;
 			String line;
 			while ((line = reader.readLine()) != null) {
@@ -444,6 +445,7 @@ public class HttpAiClient implements AiClient {
 						requireFields(event, Set.of("type", "text"));
 						String text = textual(event, "text");
 						deltas.append(text);
+						contentDeltaCount++;
 						listener.accept(TurnStreamEvent.contentDelta(text));
 					}
 					case "heartbeat" -> {
@@ -482,12 +484,17 @@ public class HttpAiClient implements AiClient {
 				throw streamInterrupted(null);
 			}
 			validateTurnResponse(completed, request);
-			String completedContent = completedContent(completed);
-			if (!deltas.toString().equals(completedContent)) {
-				throw invalidStream(null);
-			}
+			validateStreamCompletion(
+				completed,
+				request,
+				contentDeltaCount,
+				deltas.toString()
+			);
 			return completed;
 		} catch (IOException exception) {
+			if (hasCause(exception, SocketTimeoutException.class)) {
+				throw streamTimeout(exception);
+			}
 			if (timeout.get() != null) {
 				throw streamTimeout(exception);
 			}
@@ -506,16 +513,224 @@ public class HttpAiClient implements AiClient {
 		}
 	}
 
-	private String completedContent(TurnResponse response) {
-		StringBuilder value = new StringBuilder();
-		for (Map<String, Object> message : response.messages()) {
-			if (message == null
-				|| !(message.get("content") instanceof String content)) {
-				throw invalidStream(null);
-			}
-			value.append(content);
+	private void validateStreamCompletion(
+		TurnResponse response,
+		TurnRequest request,
+		int contentDeltaCount,
+		String accumulatedContent
+	) {
+		String eventType = eventType(request);
+		if (eventType == null) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"event-goal-shape"
+			);
 		}
-		return value.toString();
+
+		switch (eventType) {
+			case "EXPLAIN_CURRENT_PAGE" -> validateDeltaBackedCompletion(
+				response,
+				request,
+				contentDeltaCount,
+				accumulatedContent,
+				"EXPLAIN_CURRENT_PAGE",
+				"EXPLANATION"
+			);
+			case "USER_QUESTION" -> {
+				if (response.isDirectNote(eventType)) {
+					validateNoteCompletion(
+						response,
+						request,
+						contentDeltaCount
+					);
+				} else {
+					validateDeltaBackedCompletion(
+						response,
+						request,
+						contentDeltaCount,
+						accumulatedContent,
+						"ANSWER_USER_QUESTION",
+						"QA"
+					);
+				}
+			}
+			case "NOTE_REQUESTED" -> validateNoteCompletion(
+				response,
+				request,
+				contentDeltaCount
+			);
+			case "DIAGNOSIS_ANSWER_SUBMITTED" ->
+				validateDiagnosisCompletion(
+					response,
+					request,
+					contentDeltaCount
+				);
+			case "QUIZ_TYPE_SELECTED" -> validateQuizCompletion(
+				response,
+				request,
+				contentDeltaCount
+			);
+			default -> throw invalidStreamCompletion(
+				request,
+				response,
+				"event-goal-shape"
+			);
+		}
+	}
+
+	private void validateDeltaBackedCompletion(
+		TurnResponse response,
+		TurnRequest request,
+		int contentDeltaCount,
+		String accumulatedContent,
+		String expectedGoal,
+		String expectedMessageType
+	) {
+		if (!expectedGoal.equals(response.turnGoal())
+			|| !hasSingleMessage(response, expectedMessageType)
+			|| response.quiz() != null
+			|| response.noteDraft() != null) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"event-goal-shape"
+			);
+		}
+		if (contentDeltaCount < 1) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"content-delta-required"
+			);
+		}
+		String completedContent = (String) response.messages()
+			.getFirst()
+			.get("content");
+		if (!accumulatedContent.equals(completedContent)) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"content-delta-match"
+			);
+		}
+	}
+
+	private void validateNoteCompletion(
+		TurnResponse response,
+		TurnRequest request,
+		int contentDeltaCount
+	) {
+		if (!response.hasNoteResponseShape()
+			|| !hasSingleMessage(response, "SYSTEM")
+			|| !validNoteDraft(response)) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"event-goal-shape"
+			);
+		}
+		validateNoContentDelta(response, request, contentDeltaCount);
+	}
+
+	private void validateDiagnosisCompletion(
+		TurnResponse response,
+		TurnRequest request,
+		int contentDeltaCount
+	) {
+		Map<String, Object> patch = response.statePatch();
+		if (!"REPAIR_MISCONCEPTION".equals(response.turnGoal())
+			|| !hasSingleMessage(response, "REPAIR")
+			|| !"REPAIR_COMPLETED".equals(patch.get("pageStatus"))
+			|| !patch.containsKey("pendingDiagnosis")
+			|| patch.get("pendingDiagnosis") != null
+			|| response.quiz() != null
+			|| response.noteDraft() != null) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"event-goal-shape"
+			);
+		}
+		validateNoContentDelta(response, request, contentDeltaCount);
+	}
+
+	private void validateQuizCompletion(
+		TurnResponse response,
+		TurnRequest request,
+		int contentDeltaCount
+	) {
+		if (!"GENERATE_QUIZ".equals(response.turnGoal())
+			|| !response.messages().isEmpty()
+			|| response.quiz() == null
+			|| response.noteDraft() != null) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"event-goal-shape"
+			);
+		}
+		validateNoContentDelta(response, request, contentDeltaCount);
+	}
+
+	private void validateNoContentDelta(
+		TurnResponse response,
+		TurnRequest request,
+		int contentDeltaCount
+	) {
+		if (contentDeltaCount != 0) {
+			throw invalidStreamCompletion(
+				request,
+				response,
+				"content-delta-forbidden"
+			);
+		}
+	}
+
+	private boolean hasSingleMessage(
+		TurnResponse response,
+		String expectedMessageType
+	) {
+		if (response.messages().size() != 1) {
+			return false;
+		}
+		Map<String, Object> message = response.messages().getFirst();
+		return message != null
+			&& expectedMessageType.equals(message.get("messageType"))
+			&& message.get("content") instanceof String content
+			&& StringUtils.hasText(content);
+	}
+
+	private boolean validNoteDraft(TurnResponse response) {
+		return StringUtils.hasText(response.noteDraft().title())
+			&& response.noteDraft().title().length() <= 60
+			&& StringUtils.hasText(response.noteDraft().content());
+	}
+
+	private String eventType(TurnRequest request) {
+		if (request.event() == null) {
+			return null;
+		}
+		Object value = request.event().get("eventType");
+		return value instanceof String text ? text : null;
+	}
+
+	private AiClientException invalidStreamCompletion(
+		TurnRequest request,
+		TurnResponse response,
+		String validationRule
+	) {
+		log.atWarn()
+			.addKeyValue(
+				"traceId",
+				MDC.get(TraceIdFilter.TRACE_ID_MDC_KEY)
+			)
+			.addKeyValue("turnId", request.turnId())
+			.addKeyValue("eventType", eventType(request))
+			.addKeyValue("turnGoal", response.turnGoal())
+			.addKeyValue("validationRule", validationRule)
+			.log("AI stream completion validation failed");
+		return invalidStream(null);
 	}
 
 	private ScheduledFuture<?> scheduleTimeout(

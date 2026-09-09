@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
@@ -176,6 +177,191 @@ class TurnPersistenceServiceTest {
 		verify(candidateRepository, never()).save(any());
 		verify(qaMessageRepository, never()).save(any());
 		verify(summaryDispatcher).dispatchAfterCommit(100L);
+	}
+
+	@Test
+	void directNoteSkipsQaThreadAndReturnsNoteDraft() {
+		LearningSession session = activeSession(
+			PageStatus.EXPLAINED,
+			PageStatus.EXPLAINED,
+			2,
+			4
+		);
+		when(messageRepository.save(any())).thenAnswer(invocation ->
+			invocation.getArgument(0)
+		);
+		io.edupilot.ai.dto.NoteDraft draft = new io.edupilot.ai.dto.NoteDraft(
+			"복습 노트",
+			"핵심 내용"
+		);
+
+		PersistedTurn persisted = service().persist(
+			1L,
+			100L,
+			"request-1",
+			TurnEventType.USER_QUESTION,
+			null,
+			501L,
+			true,
+			noteResponse(
+				List.of(Map.of(
+					"messageType", "SYSTEM",
+					"content", "노트 초안을 만들었습니다."
+				)),
+				Map.of(),
+				draft
+			)
+		);
+
+		assertThat(persisted.noteDraft())
+			.isEqualTo(new io.edupilot.session.dto.NoteDraft(
+				"복습 노트",
+				"핵심 내용"
+			));
+		assertThat(persisted.messages())
+			.singleElement()
+			.satisfies(message ->
+				assertThat(message.messageType()).isEqualTo(MessageType.SYSTEM)
+			);
+		verifyNoInteractions(qaThreadRepository, qaMessageRepository);
+		verify(session).applyAiTurn(null, List.of(), false);
+		verify(summaryDispatcher).dispatchAfterCommit(100L);
+	}
+
+	@Test
+	void noteRequestedKeepsTheSameNotePersistencePath() {
+		activeSession(
+			PageStatus.EXPLAINED,
+			PageStatus.EXPLAINED,
+			2,
+			4
+		);
+		when(messageRepository.save(any())).thenAnswer(invocation ->
+			invocation.getArgument(0)
+		);
+		io.edupilot.ai.dto.NoteDraft draft = new io.edupilot.ai.dto.NoteDraft(
+			"복습 노트",
+			"핵심 내용"
+		);
+
+		PersistedTurn persisted = service().persist(
+			1L,
+			100L,
+			"request-1",
+			TurnEventType.NOTE_REQUESTED,
+			null,
+			501L,
+			false,
+			noteResponse(
+				List.of(Map.of(
+					"messageType", "SYSTEM",
+					"content", "노트 초안을 만들었습니다."
+				)),
+				Map.of(),
+				draft
+			)
+		);
+
+		assertThat(persisted.noteDraft()).isNotNull();
+		verifyNoInteractions(qaThreadRepository, qaMessageRepository);
+	}
+
+	@Test
+	void generalUserQuestionStillRequiresQaThreadPatch() {
+		LearningSession session = org.mockito.Mockito.mock(
+			LearningSession.class
+		);
+		when(session.getStatus()).thenReturn(SessionStatus.ACTIVE);
+		when(session.getActiveTurnRequestId()).thenReturn("request-1");
+		when(session.getPageStatus()).thenReturn(PageStatus.EXPLAINED);
+		when(sessionRepository.findOwnedForUpdate(100L, 1L))
+			.thenReturn(Optional.of(session));
+		when(messageRepository.save(any())).thenAnswer(invocation ->
+			invocation.getArgument(0)
+		);
+
+		assertThatThrownBy(() -> service().persist(
+			1L,
+			100L,
+			"request-1",
+			TurnEventType.USER_QUESTION,
+			null,
+			501L,
+			false,
+			new io.edupilot.ai.dto.TurnResponse(
+				"1.0",
+				"turn-1",
+				"ANSWER_USER_QUESTION",
+				List.of(),
+				List.of(Map.of(
+					"messageType", "QA",
+					"content", "질문 답변"
+				)),
+				Map.of(),
+				List.of(),
+				null,
+				List.of(),
+				null,
+				null
+			)
+		)).isInstanceOfSatisfying(BusinessException.class, exception ->
+			assertThat(exception.errorCode())
+				.isEqualTo(ErrorCode.AI_POLICY_REJECTED)
+		);
+	}
+
+	@Test
+	void rejectsIncompleteDirectNoteVariants() {
+		LearningSession session = org.mockito.Mockito.mock(
+			LearningSession.class
+		);
+		when(session.getStatus()).thenReturn(SessionStatus.ACTIVE);
+		when(session.getActiveTurnRequestId()).thenReturn("request-1");
+		when(sessionRepository.findOwnedForUpdate(100L, 1L))
+			.thenReturn(Optional.of(session));
+		io.edupilot.ai.dto.NoteDraft draft = new io.edupilot.ai.dto.NoteDraft(
+			"복습 노트",
+			"핵심 내용"
+		);
+		List<io.edupilot.ai.dto.TurnResponse> variants = List.of(
+			noteResponse(
+				List.of(Map.of("messageType", "SYSTEM", "content", "노트")),
+				Map.of(),
+				null
+			),
+			noteResponse(
+				List.of(Map.of("messageType", "SYSTEM", "content", "노트")),
+				Map.of("qaThread", Map.of("mode", "START_NEW")),
+				draft
+			),
+			noteResponse(
+				List.of(
+					Map.of("messageType", "SYSTEM", "content", "노트 1"),
+					Map.of("messageType", "SYSTEM", "content", "노트 2")
+				),
+				Map.of(),
+				draft
+			)
+		);
+
+		for (int index = 0; index < variants.size(); index++) {
+			io.edupilot.ai.dto.TurnResponse variant = variants.get(index);
+			assertThatThrownBy(() -> service().persist(
+				1L,
+				100L,
+				"request-1",
+				TurnEventType.USER_QUESTION,
+				null,
+				501L,
+				false,
+				variant
+			))
+				.as("incomplete direct-note variant %d", index)
+				.isInstanceOfSatisfying(BusinessException.class, exception ->
+					assertThat(exception.errorCode())
+						.isEqualTo(ErrorCode.AI_POLICY_REJECTED)
+				);
+		}
 	}
 
 	@Test
@@ -1101,6 +1287,27 @@ class TurnPersistenceServiceTest {
 		List<Map<String, Object>> messages
 	) {
 		return response(patch, messages, List.of());
+	}
+
+	private io.edupilot.ai.dto.TurnResponse noteResponse(
+		List<Map<String, Object>> messages,
+		Map<String, Object> statePatch,
+		io.edupilot.ai.dto.NoteDraft noteDraft
+	) {
+		return new io.edupilot.ai.dto.TurnResponse(
+			"1.0",
+			"turn-1",
+			"WRITE_NOTE",
+			List.of(),
+			messages,
+			statePatch,
+			List.of(),
+			null,
+			List.of(),
+			null,
+			noteDraft,
+			null
+		);
 	}
 
 	private io.edupilot.ai.dto.TurnResponse responseWithMemoryWrite(
