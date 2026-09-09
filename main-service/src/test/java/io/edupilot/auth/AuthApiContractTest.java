@@ -694,6 +694,29 @@ class AuthApiContractTest {
 	}
 
 	@Test
+	void activityTrackingFailureDoesNotFailAuthenticatedRequest() throws Exception {
+		User trackedUser = User.create(
+			"tracking@example.com",
+			passwordEncoder.encode("password123"),
+			"추적 실패 사용자"
+		);
+		ReflectionTestUtils.setField(trackedUser, "id", 4242L);
+		when(userRepository.updateLastActiveAt(
+			org.mockito.ArgumentMatchers.eq(4242L),
+			any()
+		)).thenThrow(new IllegalStateException("database unavailable"));
+		when(userRepository.findById(4242L)).thenReturn(Optional.of(trackedUser));
+
+		mockMvc.perform(get("/api/users/me")
+				.header(
+					HttpHeaders.AUTHORIZATION,
+					"Bearer " + jwtTokenProvider.createAccessToken(trackedUser)
+				))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.id").value(4242L));
+	}
+
+	@Test
 	void passwordChangeRejectsInvalidVariantsWithDedicatedErrors() throws Exception {
 		when(userRepository.findById(1L)).thenReturn(Optional.of(user));
 		String accessToken = jwtTokenProvider.createAccessToken(user);

@@ -28,6 +28,7 @@ import io.edupilot.auth.dto.SignupRole;
 import io.edupilot.global.error.BusinessException;
 import io.edupilot.global.error.ErrorCode;
 import io.edupilot.user.User;
+import io.edupilot.user.UserActivityTracker;
 import io.edupilot.user.UserRepository;
 import io.edupilot.user.UserRole;
 
@@ -50,6 +51,9 @@ class AuthServiceTest {
 	@Mock
 	private GoogleAccountService googleAccountService;
 
+	@Mock
+	private UserActivityTracker userActivityTracker;
+
 	private BCryptPasswordEncoder passwordEncoder;
 	private AuthService authService;
 
@@ -63,6 +67,7 @@ class AuthServiceTest {
 			refreshTokenService,
 			googleIdTokenVerifier,
 			googleAccountService,
+			userActivityTracker,
 			Clock.fixed(NOW, ZoneOffset.UTC)
 		);
 	}
@@ -346,6 +351,19 @@ class AuthServiceTest {
 			() -> authService.refresh("inactive"),
 			ErrorCode.USER_INACTIVE
 		);
+	}
+
+	@Test
+	void refreshTracksActivityAfterSuccessfulRotation() {
+		User user = user(7L, "refresh@example.com", "password123");
+		when(refreshTokenService.rotate("valid"))
+			.thenReturn(RotationResult.success(user, "rotated"));
+		when(jwtTokenProvider.createAccessToken(user)).thenReturn("access-token");
+		when(jwtTokenProvider.accessTokenExpiresInSeconds()).thenReturn(3600L);
+
+		authService.refresh("valid");
+
+		verify(userActivityTracker).track(7L);
 	}
 
 	private User user(Long id, String email, String password) {

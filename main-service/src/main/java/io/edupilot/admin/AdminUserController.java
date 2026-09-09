@@ -45,7 +45,7 @@ public class AdminUserController {
 		@RequestParam(required = false) String q,
 		@RequestParam(required = false) UserRole role,
 		@RequestParam(required = false) UserStatus status,
-		@RequestParam(defaultValue = "RECENT") AdminListSort sort,
+		@RequestParam(defaultValue = "RECENT") AdminUserSort sort,
 		@RequestParam(defaultValue = "0") @Min(0) int page,
 		@RequestParam(defaultValue = "20") @Min(1) @Max(100) int size
 	) {

@@ -11,6 +11,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import io.edupilot.global.error.ErrorCode;
+import io.edupilot.user.UserActivityTracker;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -24,9 +25,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 	private static final String BEARER_PREFIX = "Bearer ";
 
 	private final JwtTokenProvider jwtTokenProvider;
+	private final UserActivityTracker userActivityTracker;
 
-	public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
+	public JwtAuthenticationFilter(
+		JwtTokenProvider jwtTokenProvider,
+		UserActivityTracker userActivityTracker
+	) {
 		this.jwtTokenProvider = jwtTokenProvider;
+		this.userActivityTracker = userActivityTracker;
 	}
 
 	@Override
@@ -56,6 +62,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 				List.of(new SimpleGrantedAuthority("ROLE_" + principal.role().name()))
 			);
 			SecurityContextHolder.getContext().setAuthentication(authentication);
+			userActivityTracker.track(principal.userId());
 		} catch (JwtTokenValidationException exception) {
 			request.setAttribute(AUTH_ERROR_ATTRIBUTE, exception.errorCode());
 			SecurityContextHolder.clearContext();

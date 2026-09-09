@@ -1,12 +1,16 @@
 package io.edupilot.user;
 
+import java.time.Instant;
 import java.util.Optional;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 public interface UserRepository extends JpaRepository<User, Long> {
 
@@ -15,6 +19,19 @@ public interface UserRepository extends JpaRepository<User, Long> {
 	Optional<User> findByEmail(String email);
 
 	Optional<User> findByGoogleSub(String googleSub);
+
+	@Modifying
+	@Transactional(propagation = Propagation.REQUIRES_NEW)
+	@Query("""
+		update User account
+		set account.lastActiveAt = :lastActiveAt
+		where account.id = :userId
+		  and account.status = io.edupilot.user.UserStatus.ACTIVE
+		""")
+	int updateLastActiveAt(
+		@Param("userId") Long userId,
+		@Param("lastActiveAt") Instant lastActiveAt
+	);
 
 	@Query("""
 		select account
