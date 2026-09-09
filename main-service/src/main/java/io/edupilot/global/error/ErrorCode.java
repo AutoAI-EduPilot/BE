@@ -89,6 +89,31 @@ public enum ErrorCode {
 		HttpStatus.UNAUTHORIZED,
 		"이메일 또는 비밀번호가 올바르지 않습니다."
 	),
+	PASSWORD_NOT_SUPPORTED(
+		"PASSWORD_NOT_SUPPORTED",
+		HttpStatus.CONFLICT,
+		"비밀번호를 사용하는 계정이 아닙니다."
+	),
+	CURRENT_PASSWORD_MISMATCH(
+		"CURRENT_PASSWORD_MISMATCH",
+		HttpStatus.BAD_REQUEST,
+		"현재 비밀번호가 올바르지 않습니다."
+	),
+	PASSWORD_REUSE_NOT_ALLOWED(
+		"PASSWORD_REUSE_NOT_ALLOWED",
+		HttpStatus.CONFLICT,
+		"현재 비밀번호와 다른 비밀번호를 사용해 주세요."
+	),
+	PASSWORD_CHANGE_RATE_LIMITED(
+		"PASSWORD_CHANGE_RATE_LIMITED",
+		HttpStatus.TOO_MANY_REQUESTS,
+		"비밀번호 확인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요."
+	),
+	PASSWORD_RESET_NOT_ALLOWED(
+		"PASSWORD_RESET_NOT_ALLOWED",
+		HttpStatus.CONFLICT,
+		"이 사용자의 비밀번호를 초기화할 수 없습니다."
+	),
 	USER_INACTIVE("USER_INACTIVE", HttpStatus.FORBIDDEN, "비활성화된 사용자입니다."),
 	USER_NOT_FOUND("USER_NOT_FOUND", HttpStatus.NOT_FOUND, "사용자를 찾을 수 없습니다."),
 	MATERIAL_NOT_FOUND(

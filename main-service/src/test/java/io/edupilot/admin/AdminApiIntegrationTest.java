@@ -3,6 +3,9 @@ package io.edupilot.admin;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -12,12 +15,15 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.List;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hibernate.SessionFactory;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -25,7 +31,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -34,15 +42,21 @@ import org.springframework.web.context.WebApplicationContext;
 import io.edupilot.aiusage.AiFeature;
 import io.edupilot.aiusage.AiUsageLogRepository;
 import io.edupilot.auth.JwtTokenProvider;
+import io.edupilot.auth.RefreshTokenRepository;
+import io.edupilot.auth.RefreshTokenService;
 import io.edupilot.classroom.Classroom;
 import io.edupilot.classroom.ClassroomColor;
 import io.edupilot.classroom.ClassroomMember;
 import io.edupilot.classroom.ClassroomMemberRepository;
 import io.edupilot.classroom.ClassroomRepository;
 import io.edupilot.global.security.TraceIdFilter;
+import io.edupilot.user.AuthProvider;
 import io.edupilot.user.User;
 import io.edupilot.user.UserRepository;
 import io.edupilot.user.UserRole;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 
@@ -72,6 +86,9 @@ class AdminApiIntegrationTest {
 	@Autowired private WebApplicationContext context;
 	@Autowired private TraceIdFilter traceIdFilter;
 	@Autowired private JwtTokenProvider jwtTokenProvider;
+	@Autowired private PasswordEncoder passwordEncoder;
+	@Autowired private RefreshTokenService refreshTokenService;
+	@Autowired private RefreshTokenRepository refreshTokenRepository;
 	@Autowired private UserRepository userRepository;
 	@Autowired private ClassroomRepository classroomRepository;
 	@Autowired private ClassroomMemberRepository memberRepository;
@@ -80,6 +97,7 @@ class AdminApiIntegrationTest {
 	@Autowired private JdbcTemplate jdbcTemplate;
 	@Autowired private EntityManager entityManager;
 	@Autowired private EntityManagerFactory entityManagerFactory;
+	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	private MockMvc mockMvc;
 	private User admin;
@@ -97,6 +115,7 @@ class AdminApiIntegrationTest {
 		usageLogRepository.deleteAll();
 		memberRepository.deleteAll();
 		classroomRepository.deleteAll();
+		refreshTokenRepository.deleteAll();
 		userRepository.deleteAll();
 
 		admin = saveUser("admin@example.com", "관리자", UserRole.ADMIN);
@@ -138,6 +157,137 @@ class AdminApiIntegrationTest {
 			.apply(springSecurity())
 			.addFilters(traceIdFilter)
 			.build();
+	}
+
+	@Test
+	void passwordResetEndpointRejectsLearnerAndInstructorTokens() throws Exception {
+		String endpoint = "/api/admin/users/" + learner.getId() + "/password-reset";
+
+		mockMvc.perform(post(endpoint)
+				.header(HttpHeaders.AUTHORIZATION, bearer(learner)))
+			.andExpect(status().isForbidden())
+			.andExpect(jsonPath("$.error.code").value("ACCESS_DENIED"));
+		mockMvc.perform(post(endpoint)
+				.header(HttpHeaders.AUTHORIZATION, bearer(instructor)))
+			.andExpect(status().isForbidden())
+			.andExpect(jsonPath("$.error.code").value("ACCESS_DENIED"));
+	}
+
+	@Test
+	void adminPasswordResetReturnsPasswordOnceRevokesTokensAndAuditsWithoutSecret()
+		throws Exception {
+		User target = userRepository.saveAndFlush(User.create(
+			"reset-target@example.com",
+			passwordEncoder.encode("oldPassword123"),
+			"초기화 대상",
+			UserRole.LEARNER
+		));
+		refreshTokenService.issue(target);
+		refreshTokenService.issue(target);
+		Logger logger = (Logger)LoggerFactory.getLogger(AdminUserService.class);
+		ListAppender<ILoggingEvent> appender = new ListAppender<>();
+		appender.start();
+		logger.addAppender(appender);
+
+		String responseBody;
+		try {
+			responseBody = mockMvc.perform(post(
+					"/api/admin/users/" + target.getId() + "/password-reset"
+				)
+					.header(HttpHeaders.AUTHORIZATION, bearer(admin)))
+				.andExpect(status().isOk())
+				.andExpect(header().string(
+					HttpHeaders.CACHE_CONTROL,
+					org.hamcrest.Matchers.containsString("no-store")
+				))
+				.andExpect(jsonPath("$.data.temporaryPassword").isString())
+				.andExpect(jsonPath("$.data.message").value(
+					"로그인 후 즉시 변경 안내"
+				))
+				.andReturn().getResponse().getContentAsString();
+		} finally {
+			logger.detachAppender(appender);
+			appender.stop();
+		}
+
+		String temporaryPassword = objectMapper.readTree(responseBody)
+			.path("data")
+			.path("temporaryPassword")
+			.asText();
+		User resetTarget = userRepository.findById(target.getId()).orElseThrow();
+		assertThat(temporaryPassword).hasSize(16);
+		assertThat(resetTarget.getPasswordHash()).isNotEqualTo(temporaryPassword);
+		assertThat(passwordEncoder.matches(
+			temporaryPassword,
+			resetTarget.getPasswordHash()
+		)).isTrue();
+		assertThat(refreshTokenRepository.findAll())
+			.hasSize(2)
+			.allSatisfy(token -> assertThat(token.getRevokedAt()).isNotNull());
+		assertThat(appender.list)
+			.anySatisfy(event -> assertThat(logText(event))
+				.contains(
+					"actorUserId=\"" + admin.getId() + "\"",
+					"targetUserId=\"" + target.getId() + "\"",
+					"action=\"ADMIN_PASSWORD_RESET\"",
+					"occurredAt=\""
+				))
+			.allSatisfy(event -> assertThat(logText(event))
+				.doesNotContain(temporaryPassword));
+
+		mockMvc.perform(post("/api/auth/login")
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{
+					  "email":"reset-target@example.com",
+					  "password":"%s"
+					}
+					""".formatted(temporaryPassword)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.user.id").value(target.getId()));
+	}
+
+	@Test
+	void adminPasswordResetRejectsGoogleDeletedAndSelfTargets() throws Exception {
+		User googleTarget = userRepository.saveAndFlush(User.createGoogle(
+			"google-target@example.com",
+			"!google-account",
+			"구글 대상",
+			UserRole.LEARNER,
+			null,
+			false,
+			null,
+			null,
+			null,
+			"google-target-sub"
+		));
+		assertThat(googleTarget.getAuthProvider()).isEqualTo(AuthProvider.GOOGLE);
+
+		mockMvc.perform(post(
+				"/api/admin/users/" + googleTarget.getId() + "/password-reset"
+			)
+				.header(HttpHeaders.AUTHORIZATION, bearer(admin)))
+			.andExpect(status().isConflict())
+			.andExpect(jsonPath("$.error.code").value("PASSWORD_NOT_SUPPORTED"));
+
+		mockMvc.perform(post(
+				"/api/admin/users/" + deletedUser.getId() + "/password-reset"
+			)
+				.header(HttpHeaders.AUTHORIZATION, bearer(admin)))
+			.andExpect(status().isConflict())
+			.andExpect(jsonPath("$.error.code").value("PASSWORD_RESET_NOT_ALLOWED"));
+
+		mockMvc.perform(post(
+				"/api/admin/users/" + admin.getId() + "/password-reset"
+			)
+				.header(HttpHeaders.AUTHORIZATION, bearer(admin)))
+			.andExpect(status().isConflict())
+			.andExpect(jsonPath("$.error.code").value("PASSWORD_RESET_NOT_ALLOWED"));
+
+		mockMvc.perform(post("/api/admin/users/999999/password-reset")
+				.header(HttpHeaders.AUTHORIZATION, bearer(admin)))
+			.andExpect(status().isNotFound())
+			.andExpect(jsonPath("$.error.code").value("USER_NOT_FOUND"));
 	}
 
 	@Test
@@ -504,6 +654,17 @@ class AdminApiIntegrationTest {
 
 	private String bearer(User user) {
 		return "Bearer " + jwtTokenProvider.createAccessToken(user);
+	}
+
+	private String logText(ILoggingEvent event) {
+		String throwableMessage = event.getThrowableProxy() == null
+			? ""
+			: String.valueOf(event.getThrowableProxy().getMessage());
+		return event.getFormattedMessage()
+			+ Arrays.toString(event.getArgumentArray())
+			+ event.getKeyValuePairs()
+			+ event.getMDCPropertyMap()
+			+ throwableMessage;
 	}
 
 	private void assertNoCredentialKeys(String body) {

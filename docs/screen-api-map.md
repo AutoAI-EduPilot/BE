@@ -21,6 +21,7 @@
 | 인앱 알림 | 목록 조회·읽음·삭제 | `GET /api/users/me/notifications`, `PATCH .../{notificationId}/read`, `DELETE .../{notificationId}` | `type`과 `link`로 자료·공지·입장 요청 화면에 라우팅하고 읽음 상태 반영. 예약 공지도 게시 시각 이후 한 번만 표시 | 비인증, 타인·부재 알림 404, 페이지네이션 |
 | 피드백 화면/모달 | 피드백 제출 | `POST /api/feedback` | 접수 ID·시각 확인 후 완료 표시 | 비인증, category·내용 길이 오류 |
 | 관리자 회원 현황 | 목록·검색·역할/상태 필터·상세 조회 | `GET /api/admin/users`, `GET /api/admin/users/{id}` | ACTIVE·DELETED 전체 회원의 비민감 프로필과 가입일 표시 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, 없는 회원 404 |
+| 관리자 회원 현황 | 사용자 비밀번호 초기화 | `POST /api/admin/users/{id}/password-reset` | 확인 후 실행하고 `temporaryPassword`를 재조회 불가 안내와 함께 모달에 1회 표시하며 복사 버튼 제공 | 비ADMIN 403, 없는 회원 404, GOOGLE·DELETED·자기 자신 409 |
 | 관리자 강의실 현황 | 목록·정렬·상세 조회 | `GET /api/admin/classrooms`, `GET /api/admin/classrooms/{id}` | 개설자·상태·멤버 수와 상세 멤버 목록 표시 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, 없는 강의실 404 |
 | 관리자 AI 사용량 | 기간별 요약·사용자 상위 N 조회 | `GET /api/admin/ai-usage/summary`, `GET /api/admin/ai-usage/users` | 최근 7일 기본, 최대 92일의 KST 일별·기능별·사용자별 집계 표시 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, 날짜 범위·limit 400 |
 | 관리자 인프라 현황 | 환경·기간별 EC2 지표, AWS 비용, 앱 상태 조회 | `GET /api/admin/infra/metrics`, `GET /api/admin/infra/cost`, `GET /api/admin/infra/app` | CPU·네트워크·메모리·디스크·상태검사 시계열, 월/서비스/일별 비용, JVM·HTTP·DB·AI 상태 표시. AWS 실패 시 unavailable 또는 stale 안내 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, env·range 400, AWS 장애는 200 fail-soft |
@@ -56,6 +57,7 @@
 | 리포트 기준 `/classrooms/:classroomId/report-criteria` | AI 평가 지표 생성·상태 polling | `POST /api/classrooms/{classroomId}/report-criteria/generate`, `GET .../generation` | 202 후 `RUNNING`을 polling하고 `COMPLETED`면 목록 갱신, `FAILED`면 message 표시 | READY 개요 1개 이상, 여유 슬롯 3개 이상, 동시 실행 409, 소유권 |
 | 전역 | access 만료(401) 시 | `POST /api/auth/refresh` (credentials 포함) | 새 access로 원요청 재시도 | TOKEN_INVALID → 로그인 이동 |
 | 헤더/메뉴 | 로그아웃 버튼 | `POST /api/auth/logout` | 메모리 access 삭제 후 로그인 화면 | 없음(멱등) |
+| 계정 설정 | 현재·새 비밀번호 입력 후 변경 | `PATCH /api/users/me/password` | 성공 시 `reauthenticationRequired=true`를 확인하고 access 삭제 후 로그인 화면 이동 | GOOGLE 계정·동일 비밀번호 409, 현재 비밀번호 불일치·정책 위반 400, 5회 실패 후 429 |
 | 계정 설정 | 탈퇴 버튼 → 비밀번호 확인 모달 | `DELETE /api/users/me` | 토큰 정리 후 로그인 화면 이동 | 비밀번호 불일치 (DEC-028) |
 | 자료 목록 | 화면 진입/페이지 이동 | `GET /api/materials` | 자료 카드 목록. FAILED는 `failureReason`별 안내, null이면 일반 실패 문구, `traceId`가 있으면 문의 정보로 표시 | 권한, 네트워크 |
 | 자료 업로드 | 파일 제출 | `POST /api/materials` | 처리 상태 표시 후 목록 반영 | 파일 형식/크기/처리 실패 |

@@ -60,6 +60,7 @@
 | GET | `/api/health/ready` | DB·AI Service readiness ([응답 계약](issues/11-observability.md)) | N | 전체 |
 | GET | `/api/users/me` | 내 정보 조회 | Y | 본인 |
 | PATCH | `/api/users/me` | 내 프로필 수정 | Y | 본인 |
+| PATCH | `/api/users/me/password` | 내 비밀번호 변경 | Y | 본인 LOCAL 계정 |
 | POST | `/api/users/me/avatar` | 내 아바타 업로드·교체 | Y | 본인 |
 | GET | `/api/users/me/avatar` | 내 아바타 스트리밍 | Y | 본인 |
 | DELETE | `/api/users/me/avatar` | 내 아바타 삭제 | Y | 본인 |
@@ -112,6 +113,7 @@
 | GET | `/api/classrooms/{id}` | 강의실 상세 | Y | 소유 INSTRUCTOR 또는 승인 멤버 |
 | GET | `/api/admin/users` | 관리자 회원 목록 조회 | Y | ADMIN + DB role/status 재검증 |
 | GET | `/api/admin/users/{id}` | 관리자 회원 상세 조회 | Y | ADMIN + DB role/status 재검증 |
+| POST | `/api/admin/users/{id}/password-reset` | 관리자 사용자 비밀번호 초기화 | Y | ADMIN + DB role/status 재검증; 타 LOCAL/ACTIVE 사용자 |
 | GET | `/api/admin/classrooms` | 관리자 강의실 목록 조회 | Y | ADMIN + DB role/status 재검증 |
 | GET | `/api/admin/classrooms/{id}` | 관리자 강의실 상세 조회 | Y | ADMIN + DB role/status 재검증 |
 | GET | `/api/admin/ai-usage/summary` | 관리자 AI 사용량 일별·기능별 집계 | Y | ADMIN + DB role/status 재검증 |
@@ -321,6 +323,27 @@ login의 `user`와 같은 사용자 필드를 반환합니다. 기존 계정은 
 ```
 
 두 필드는 부분 수정입니다. `name`은 공백 제거 후 1~100자이고, `affiliation`은 생략하면 유지하며 빈 문자열이면 `null`로 해제합니다. 변경 필드가 없으면 `VALIDATION_FAILED`입니다. 성공 시 GET users/me와 같은 사용자 응답을 반환합니다.
+
+### PATCH `/api/users/me/password`
+
+```json
+{
+  "currentPassword": "password123",
+  "newPassword": "newPassword456"
+}
+```
+
+`newPassword`에는 회원가입과 같은 비밀번호 정책(8~64자, 영문·숫자 각 1자 이상)을 적용합니다. `LOCAL` 계정만 사용할 수 있고, 현재 비밀번호가 일치해야 하며 현재 비밀번호와 같은 새 비밀번호는 거부합니다. 현재 비밀번호 검증에 5회 실패하면 마지막 실패부터 15분 동안 사용자 ID 기준으로 요청을 제한합니다. 성공하면 실패 횟수를 초기화합니다.
+
+이 요청에서는 현재 브라우저의 refresh token을 식별할 수 없으므로 성공 시 해당 사용자의 활성 refresh token을 **전량 폐기**합니다. `data`는 다음과 같으며, FE는 `reauthenticationRequired=true`를 받으면 보유 access token을 삭제하고 로그인 화면으로 이동해야 합니다. 기존 access token은 stateless JWT이므로 만료 전까지 서버에서 개별 폐기할 수 없습니다.
+
+```json
+{
+  "reauthenticationRequired": true
+}
+```
+
+응답은 `Cache-Control: private, no-store`입니다. 주요 오류: `PASSWORD_NOT_SUPPORTED`(409), `CURRENT_PASSWORD_MISMATCH`(400), `PASSWORD_REUSE_NOT_ALLOWED`(409), `PASSWORD_CHANGE_RATE_LIMITED`(429), `VALIDATION_FAILED`(400).
 
 ### POST `/api/users/me/avatar`
 
@@ -2238,12 +2261,14 @@ evidence는 결과가 참조한 항목만 `evidenceId`, `sourceType`, `publicLab
 `minimalFact`, hash와 generation lease 정보는 외부 응답에 포함하지 않습니다. 없는 리포트는
 `REPORT_NOT_FOUND`(404)입니다.
 
-## 7.4 관리자 조회 API
+## 7.4 관리자 API
 
 모든 `/api/admin/**` 요청은 JWT의 `ROLE_ADMIN` URL 규칙, 컨트롤러의
 `@PreAuthorize("hasRole('ADMIN')")`, 요청 시점 DB의 `ADMIN/ACTIVE` 재검증을 모두
-통과해야 합니다. 이 API 묶음은 읽기 전용이며 역할·상태 변경, 회원 탈퇴, 강의실 조작 같은
-쓰기 API는 제공하지 않습니다.
+통과해야 합니다. 관리자 API는 원칙적으로 읽기 전용이며 역할·상태 변경, 회원 탈퇴, 강의실
+조작 API는 제공하지 않습니다. 비밀번호 초기화는 이미 수행 중인 운영 수작업을 감사 가능한
+안전 경로로 바꾸고 대상자가 다음 로그인에서 즉시 인지하는 행위이므로 아래 한 개의 명시적
+쓰기 예외만 제공합니다.
 
 ### GET `/api/admin/users?q=&role=&status=&sort=&page=&size=`
 
@@ -2262,6 +2287,29 @@ evidence는 결과가 참조한 항목만 `evidenceId`, `sourceType`, `publicLab
 
 목록 필드에 `affiliation`, `consentedAt`을 추가한 상세를 반환합니다. 없는 사용자는
 `USER_NOT_FOUND`(404)입니다.
+
+### POST `/api/admin/users/{id}/password-reset`
+
+요청 body 없이 path의 사용자 ID만 사용합니다. 대상은 다른 `LOCAL/ACTIVE` 사용자여야 하며
+관리자 자신의 초기화는 본인 변경 API를 사용하도록 거부합니다. 서버가 회원가입 정책을
+충족하는 16자 임시 비밀번호를 `SecureRandom`으로 생성해 BCrypt 해시만 저장하고 대상자의
+활성 refresh token을 전량 폐기합니다.
+
+`data`:
+
+```json
+{
+  "temporaryPassword": "응답에서만 제공되는 16자 값",
+  "message": "로그인 후 즉시 변경 안내"
+}
+```
+
+임시 비밀번호는 이 응답에서 한 번만 전달되며 DB 평문·감사 로그에 저장하지 않습니다. 응답은
+`Cache-Control: private, no-store`입니다. FE는 재조회가 불가능함을 알리는 모달에서 값을 한
+번 표시하고 복사 버튼을 제공해야 합니다. 감사 로그에는 `actorUserId`, `targetUserId`,
+`action=ADMIN_PASSWORD_RESET`, 시각만 INFO 구조화 필드로 남깁니다. 주요 오류:
+`USER_NOT_FOUND`(404), `PASSWORD_NOT_SUPPORTED`(409), `PASSWORD_RESET_NOT_ALLOWED`(409),
+비ADMIN 또는 요청 시점 DB의 비활성·비ADMIN actor는 `ACCESS_DENIED`(403).
 
 ### GET `/api/admin/classrooms?sort=&page=&size=`
 
