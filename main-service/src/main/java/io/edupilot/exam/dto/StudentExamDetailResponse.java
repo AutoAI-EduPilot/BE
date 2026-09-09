@@ -20,6 +20,7 @@ public record StudentExamDetailResponse(
 	BigDecimal totalScore,
 	List<StudentExamQuestionResponse> questions,
 	ExamSubmissionSummaryResponse latestSubmission,
+	Instant dueAt,
 	Instant publishedAt,
 	Instant closedAt
 ) {
@@ -34,7 +35,7 @@ public record StudentExamDetailResponse(
 			exam.getWeekNumber(), exam.getStatus(), exam.isAllowRetake(), submittable,
 			exam.getTotalScore(),
 			questions.stream().map(StudentExamQuestionResponse::from).toList(),
-			latestSubmission, exam.getPublishedAt(), exam.getClosedAt()
+			latestSubmission, exam.getDueAt(), exam.getPublishedAt(), exam.getClosedAt()
 		);
 	}
 }

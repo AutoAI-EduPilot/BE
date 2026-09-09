@@ -20,6 +20,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 @Entity
 @Table(
@@ -27,10 +28,15 @@ import jakarta.persistence.Table;
 	indexes = @Index(
 		name = "idx_notifications_user_created",
 		columnList = "user_id, created_at"
+	),
+	uniqueConstraints = @UniqueConstraint(
+		name = "uk_notifications_dedup",
+		columnNames = "dedup_key"
 	)
 )
 @Check(constraints = "type IN ('MATERIAL_UPLOADED', 'NOTICE_PUBLISHED', "
-	+ "'JOIN_REQUEST_RECEIVED', 'JOIN_REQUEST_PROCESSED')")
+	+ "'JOIN_REQUEST_RECEIVED', 'JOIN_REQUEST_PROCESSED', 'EXAM_PUBLISHED', "
+	+ "'EXAM_DEADLINE_APPROACHING', 'EXAM_GRADED')")
 public class Notification {
 
 	@Id
@@ -57,6 +63,9 @@ public class Notification {
 
 	@Column(name = "read_at")
 	private Instant readAt;
+
+	@Column(name = "dedup_key", length = 120)
+	private String dedupKey;
 
 	@Column(name = "created_at", nullable = false, updatable = false)
 	private Instant createdAt;
@@ -119,6 +128,10 @@ public class Notification {
 
 	public Instant getReadAt() {
 		return readAt;
+	}
+
+	public String getDedupKey() {
+		return dedupKey;
 	}
 
 	public Instant getCreatedAt() {

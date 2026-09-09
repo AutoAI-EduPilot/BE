@@ -15,6 +15,7 @@ public record StudentExamListItemResponse(
 	boolean submittable,
 	BigDecimal totalScore,
 	ExamSubmissionSummaryResponse latestSubmission,
+	Instant dueAt,
 	Instant publishedAt,
 	Instant closedAt
 ) {
@@ -26,7 +27,7 @@ public record StudentExamListItemResponse(
 		return new StudentExamListItemResponse(
 			exam.getId(), exam.getTitle(), exam.getWeekNumber(), exam.getStatus(),
 			exam.isAllowRetake(), submittable, exam.getTotalScore(), latestSubmission,
-			exam.getPublishedAt(), exam.getClosedAt()
+			exam.getDueAt(), exam.getPublishedAt(), exam.getClosedAt()
 		);
 	}
 }

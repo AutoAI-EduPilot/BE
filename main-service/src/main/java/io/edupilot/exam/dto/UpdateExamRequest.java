@@ -1,5 +1,6 @@
 package io.edupilot.exam.dto;
 
+import java.time.Instant;
 import java.util.List;
 
 import jakarta.validation.Valid;
@@ -14,6 +15,8 @@ public class UpdateExamRequest {
 	private Integer weekNumber;
 	private boolean allowRetakePresent;
 	private Boolean allowRetake;
+	private boolean dueAtPresent;
+	private Instant dueAt;
 	private boolean questionsPresent;
 	private List<@Valid ExamQuestionRequest> questions;
 
@@ -34,6 +37,11 @@ public class UpdateExamRequest {
 		this.allowRetakePresent = true;
 		this.allowRetake = allowRetake;
 	}
+	public Instant getDueAt() { return dueAt; }
+	public void setDueAt(Instant dueAt) {
+		this.dueAtPresent = true;
+		this.dueAt = dueAt;
+	}
 	public List<ExamQuestionRequest> getQuestions() { return questions; }
 	public void setQuestions(List<ExamQuestionRequest> questions) {
 		this.questionsPresent = true;
@@ -43,9 +51,10 @@ public class UpdateExamRequest {
 	public boolean isDescriptionPresent() { return descriptionPresent; }
 	public boolean isWeekNumberPresent() { return weekNumberPresent; }
 	public boolean isAllowRetakePresent() { return allowRetakePresent; }
+	public boolean isDueAtPresent() { return dueAtPresent; }
 	public boolean isQuestionsPresent() { return questionsPresent; }
 	public boolean hasAnyField() {
 		return titlePresent || descriptionPresent || weekNumberPresent
-			|| allowRetakePresent || questionsPresent;
+			|| allowRetakePresent || dueAtPresent || questionsPresent;
 	}
 }

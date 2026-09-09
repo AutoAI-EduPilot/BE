@@ -14,6 +14,7 @@ public record InstructorExamListItemResponse(
 	boolean allowRetake,
 	BigDecimal totalScore,
 	long submissionCount,
+	Instant dueAt,
 	Instant publishedAt,
 	Instant closedAt
 ) {
@@ -21,7 +22,7 @@ public record InstructorExamListItemResponse(
 		return new InstructorExamListItemResponse(
 			exam.getId(), exam.getTitle(), exam.getWeekNumber(), exam.getStatus(),
 			exam.isAllowRetake(), exam.getTotalScore(), submissionCount,
-			exam.getPublishedAt(), exam.getClosedAt()
+			exam.getDueAt(), exam.getPublishedAt(), exam.getClosedAt()
 		);
 	}
 }
