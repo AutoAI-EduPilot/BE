@@ -476,7 +476,7 @@ class StudentExamJpaTest {
 		)).containsExactly(new ExamGradingCandidate(recoverable.getId(), exam.getId()));
 	}
 
-	private io.edupilot.exam.dto.ExamSubmissionResponse grade(Long submissionId) {
+	private io.edupilot.exam.dto.StudentExamSubmissionResponse grade(Long submissionId) {
 		Instant now = Instant.parse("2026-08-03T01:00:00Z");
 		String token = "00000000-0000-0000-0000-000000000001";
 		assertThat(persistenceService.claimGradingLease(

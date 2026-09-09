@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 상태 | Open |
-| 마지막 갱신 | 2026-08-03 |
+| 마지막 갱신 | 2026-09-09 |
 
 확정된 선택은 날짜, 결정자, 이유를 기록하고 관련 문서를 함께 갱신합니다. 마감일은 팀 일정 확정 후 입력합니다.
 
@@ -391,25 +391,27 @@
 
 ### DEC-031 — 별도 시험 생성·응시·채점 계약
 
-- 상태: Accepted — [GitHub #133](https://github.com/AutoAI-EduPilot/BE/issues/133)에서 프로젝트 담당자가 권장안을 승인했습니다. AI 담당자의 사전 설계 확인은 승인 게이트에서 제외하되 AI Service v0.6 구현·계약 테스트·재기동 검증은 후속 완료 게이트로 유지합니다. 제출 후 정답·해설 공개(D4)는 Deferred이며, 확정 전까지 비공개를 적용합니다.
+- 상태: Accepted — [GitHub #133](https://github.com/AutoAI-EduPilot/BE/issues/133)에서 프로젝트 담당자가 권장안을 승인했고, [GitHub #384](https://github.com/AutoAI-EduPilot/BE/issues/384)에서 정답·해설 공개(D4)와 응시 시간(D9)을 확정했습니다. AI 담당자의 사전 설계 확인은 승인 게이트에서 제외하되 AI Service v0.6 구현·계약 테스트·재기동 검증은 후속 완료 게이트로 유지합니다.
 - 결정일: 2026-08-03
+- D4·D9 개정일: 2026-09-09
 - 결정자: 프로젝트 담당자. grade optional 필드와 정수 `quizId`는 본 결정으로 확정하며 AI 담당자는 구현·검증 결과를 보고합니다.
 - 선택:
   - **D1 — 출제**: MVP는 강사 직접 출제만 지원합니다. AI 시험 초안 생성(#135)은 Phase C로 이월하며 `exam_questions.source` 같은 선행 확장 컬럼을 두지 않습니다.
   - **D2 — 재응시**: `allow_retake=false`가 기본입니다. 허용 시 모든 시도를 `attempt_no` 순서로 보존합니다. 운영 화면의 최신 제출은 상태와 무관한 `MAX(attempt_no)`, 성적·리포트 대표값은 DEC-032에 따라 `MAX(attempt_no WHERE status=GRADED)`로 파생합니다.
   - **D3 — 주관식 루브릭**: SHORT의 `referenceAnswer`와 ESSAY의 `modelAnswer`는 필수이고 rubric은 선택입니다. `null`과 빈 배열은 모두 미입력으로 취급해 grade 호출 시 `[{"criterion":"모범 답안 부합도","weight":1.0}]`을 주입합니다. DRAFT에는 불완전한 weight 합도 저장할 수 있고, 공개 시 입력된 rubric의 weight 합이 1.0인지 검증합니다.
-  - **D4 — 정답·해설 공개**: 정책 확정 전에는 제출 후에도 정답, 해설, 모범 답안과 rubric을 학생 응답에 포함하지 않습니다. 공개 전환은 별도 결정으로 추가하며 기존 공개 문항 조회 경로에는 조건부 정답 직렬화를 넣지 않습니다.
+  - **D4 — 정답·해설 공개**: 본인 제출 결과에서 `exam.status == CLOSED || (!exam.allowRetake && submission.status == GRADED)`일 때만 `reviewAvailable=true`와 유형별 `correctAnswer`, `explanation`을 제공합니다. 공개 전에는 두 문항 필드의 키 자체를 생략하고, 모든 경우에 rubric과 비공개 정답 원본은 노출하지 않습니다. 기존 시험 목록·상세와 POST 제출 응답에는 조건부 정답 직렬화를 넣지 않습니다.
   - **D5 — AI 채점**: SHORT/ESSAY는 기존 `/internal/ai/grade`를 재사용합니다. 시험은 `pageContext`와 `learnerMemoryDigest`를 생략하고, 동일 답안의 채점이 학습자 메모리에 따라 달라지지 않게 합니다. grade `quizId`에는 숫자 `examId`를 사용하며 wire 타입 변경은 후속 계약 버전에서 다룹니다. 응답이 있는 SHORT와 ESSAY를 유형별로 묶어 각 최대 1회 호출하고, 한 유형 호출이 실패해도 나머지 유형은 계속 호출해 성공 결과를 보존합니다.
   - **D6 — 미응답**: 누락 답안은 `answer=NULL`, `score=0`, `verdict=WRONG`, `feedback=NULL`로 저장하고 AI 채점 요청에서 제외합니다. 전 문항 미응답 제출도 유효한 0점 시도로 보존합니다.
   - **D7 — 채점 실패**: AI 대상 답안은 채점 완료 전과 실패 시 `score`, `verdict`, `feedback`을 `NULL`로 둡니다. 제출 총점·정규화 점수도 완전한 채점 전에는 `NULL`이며, 결정적 채점 결과와 미응답 결과는 유지합니다.
   - **D8 — 빈 DRAFT**: 문항이 없는 DRAFT와 `total_score=0`을 허용합니다. 공개 시점에만 문항 1개 이상, 양수 총점, 유형별 비공개 정답과 rubric 불변식을 검증합니다.
+  - **D9 — 응시 시간**: PUBLISHED 시험의 승인 학습자가 응시 화면에 진입하면 `(exam,user)`별 미소비 시작 시각을 멱등 기록합니다. 성공한 제출만 같은 트랜잭션에서 기록을 소비해 `startedAt`, `durationSeconds`를 스냅샷하며, 시작 API를 호출하지 않은 기존 클라이언트의 제출은 두 필드가 null이어도 허용합니다.
   - 시험 상태는 `DRAFT → PUBLISHED → CLOSED` 단방향입니다. 공개는 PUBLISHED에서, 마감은 CLOSED에서만 멱등입니다. DRAFT 마감은 `EXAM_NOT_PUBLISHED`, CLOSED 공개는 `EXAM_NOT_EDITABLE`로 거부합니다.
   - 완료 강의실은 신규 학습 활동인 시험 생성·수정·공개·제출만 `CLASSROOM_COMPLETED`로 차단합니다. 기존 PUBLISHED 시험의 마감과 DRAFT 시험의 물리 삭제는 정리 작업으로 허용합니다.
   - 동일 제출의 네트워크 재시도는 같은 `requestId`를 사용해 기존 제출을 반환하고, 재응시는 반드시 새 `requestId`를 발급합니다.
   - 응답이 있는 SHORT/ESSAY 문항이 하나도 없으면 AI를 호출하지 않고 결정적 결과만으로 `GRADED`를 확정합니다. 실제 AI 호출이 하나 이상 발생하고 일반 채점 오류가 하나라도 생긴 경우에만 `GRADING_FAILED`로 저장합니다.
   - 최초 동기 채점 계약에서는 `AI_REQUEST_INVALID`을 보상 삭제 후 `INTERNAL_SERVER_ERROR`(500)로 반환하기로 했습니다. 비동기 채점 전환 이후의 처리는 DEC-032가 대체합니다.
 - 이유: 별도 시험은 통합 학습 퀴즈와 데이터를 분리하면서 기존 결정적 채점과 GraderAgent 검증을 재사용해야 합니다. 공개 전 편집 자유도, 채점 실패의 정확한 표현, 전 시도 보존을 보장해야 리포트의 최신·누적 추세가 왜곡되지 않습니다.
-- 대안과 trade-off: 정답·해설 즉시 공개는 학습 피드백이 빠르지만 재응시 시험의 정답 노출 문제가 있어 보류했습니다. AI 출제 초안은 편의성이 있으나 ReportAgent보다 우선하지 않아 Phase C로 이월합니다.
+- 대안과 trade-off: 모든 제출 직후 정답·해설을 공개하면 학습 피드백은 빠르지만 재응시 시험에서 정답 정보가 노출됩니다. 마감 후 또는 재응시 불가 시험의 채점 완료 후로 제한해 피드백과 시험 공정성을 함께 보존합니다. AI 출제 초안은 편의성이 있으나 ReportAgent보다 우선하지 않아 Phase C로 이월합니다.
 - 후속 변경 문서: [API 명세](api-spec.md) §6.2, [데이터베이스](database.md), [도메인 모델](domain-model.md), [에러 코드](error-code.md), [화면-API 매핑](screen-api-map.md), [AI 연동 계약](ai-integration-contract.md) v0.6
 
 ### DEC-032 — 시험 비동기 채점·복구와 성적 대표값

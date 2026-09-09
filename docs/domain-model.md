@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 상태 | 초안 |
-| 마지막 갱신 | 2026-08-02 |
+| 마지막 갱신 | 2026-09-09 |
 | 범위 | Spring 소유 영속 도메인 |
 
 ## 1. 도메인 경계
@@ -17,7 +17,7 @@
 | Learning | LearningSession, ChatMessage | 현재 학습 상태와 대화 기록 |
 | QA | QaThread, QaMessage | 이어지는 질문 문맥 |
 | Quiz | Quiz, QuizSubmission, QuizAssessment | 문제 원본, 제출·채점, 내부 평가 |
-| Exam | Exam, ExamQuestion, ExamSubmission, ExamAnswer | 강사 출제 시험, 재응시, 문항별 채점 결과 |
+| Exam | Exam, ExamQuestion, ExamAttemptStart, ExamSubmission, ExamAnswer | 강사 출제 시험, 멱등 응시 시작, 재응시, 문항별 채점 결과 |
 | Repair | Diagnosis, RepairResult | 진단 질문과 오개념 교정 |
 | Personalization | LearnerMemory | 반복 근거 기반 장기 개인화 정보 |
 
@@ -193,11 +193,13 @@ erDiagram
 - `dueAt`은 nullable UTC 시각입니다. 생성·수정에서 명시한 non-null 값은 현재보다 미래여야 하며 목록·상세 표시와 D-3·D-1 알림에만 사용합니다. 시각 경과로 제출을 차단하거나 상태를 자동으로 CLOSED로 바꾸지 않습니다.
 - 상태는 `DRAFT → PUBLISHED → CLOSED` 단방향입니다. DRAFT는 문항 0개와 불완전한 rubric을 허용하고, 공개 시 문항·총점·비공개 정답·rubric 불변식을 검증합니다.
 - 강사가 전달한 문항 배열은 DRAFT에서만 전체 교체합니다. 공개 이후 문항·설정 수정과 삭제는 금지하고 CLOSED 전환으로 종료합니다.
-- 공개 문항 JSON과 정답·모범 답안·rubric이 담긴 비공개 JSON을 분리합니다. 학생 조회와 제출 결과에는 DEC-031 D4 확정 전까지 비공개 필드를 포함하지 않습니다.
+- 공개 문항 JSON과 정답·모범 답안·rubric이 담긴 비공개 JSON을 분리합니다. 학생 목록·상세·POST 제출 응답에는 비공개 필드를 포함하지 않습니다. 본인 결과 조회는 공개 정책을 만족할 때만 유형별 `correctAnswer`와 `explanation`을 명시적으로 매핑하며 rubric과 비공개 원본은 노출하지 않습니다.
 - 완료 강의실에서는 생성·수정·공개를 차단하지만, 기존 PUBLISHED 시험 마감과 DRAFT 시험 삭제는 정리 작업으로 허용합니다.
 
 ### ExamSubmission / ExamAnswer
 
+- `ExamAttemptStart`는 `(examId,userId)`당 미소비 시작 기록 하나를 유지합니다. PUBLISHED 시험의 승인 학습자가 응시 화면에 재진입해도 기존 `startedAt`을 반환하며, 동시 생성은 유일 제약 충돌 후 기존 행을 읽는 insert-or-get으로 처리합니다.
+- 제출 성공은 같은 트랜잭션에서 시작 기록을 소비·삭제하고 제출에 `startedAt`, `durationSeconds`를 스냅샷합니다. 시작 API를 호출하지 않은 제출과 기존 제출은 두 필드가 null이어도 유효합니다. 제출 시각이 시작 시각보다 빠르면 `durationSeconds`만 null로 두고 경고합니다.
 - 제출은 `(examId,userId,attemptNo)`로 시도를 보존합니다. attemptNo는 상태와 무관하게 증가합니다. 운영 조회·polling의 최신 시도는 전체 `MAX(attemptNo)`, 성적·리포트 대표값은 `MAX(attemptNo WHERE status=GRADED)`입니다. `GRADED 80점 → GRADING_FAILED`이면 이전 80점이 대표 성적입니다.
 - 같은 `requestId`는 같은 제출을 반환합니다. 새 재응시는 반드시 새 requestId를 사용합니다.
 - 상태는 `SUBMITTED → GRADED | GRADING_FAILED`입니다. 응답 있는 SHORT/ESSAY가 있으면 202/SUBMITTED로 먼저 반환하고, 결정적 채점만 필요하면 200/GRADED로 반환합니다. 두 응답의 DTO 스키마는 같습니다.
@@ -207,6 +209,7 @@ erDiagram
 - AI 대상 답안은 채점 완료 전·실패 시 점수와 판정이 없습니다. 미응답 문항만 `answer=null`, 0점, `WRONG`으로 즉시 확정하며 AI 호출에서 제외합니다.
 - GRADING_FAILED는 응시권을 소모하지 않으며 allowRetake와 무관하게 새 requestId로 다음 시도를 허용합니다. SUBMITTED인 최신 시도가 있으면 새 제출을 차단합니다.
 - worker는 조건부 lease claim과 token 일치 결과 반영을 사용합니다. `SUBMITTED.updatedAt`은 마지막 채점 시도 시작 시각입니다. scheduler는 30초마다 마지막 시도 후 30분이 지난 제출을 첫 두 번 재큐잉하고 세 번째 컷오프에서 `GRADING_FAILED`로 종결하며, 강사는 실패 제출을 저장 답안으로 재채점해 카운트를 초기화할 수 있습니다.
+- 본인 결과의 정답·해설 공개 여부는 `exam.status == CLOSED || (!exam.allowRetake && submission.status == GRADED)`로만 계산합니다. 비공개 시 `correctAnswer`, `explanation` 키 자체를 생략합니다.
 - 시험 결과는 QuizAssessment·Diagnosis 파이프라인을 시작하지 않습니다. 모든 시도와 문항 결과는 리포트가 최신·누적 추세를 분리할 수 있도록 보존합니다.
 
 ### Diagnosis / RepairResult
@@ -313,4 +316,5 @@ MVP는 세션 단일 `pageStatus`를 유지하고 페이지 이동 시 초기화
 13. 시험의 DRAFT 저장은 편집 중 불완전 상태를 허용하고 공개 시점에만 전체 불변식을 검증합니다.
 14. 시험의 재응시는 전부 보존하고 최신 시도를 대표값으로 사용하며, 같은 제출 재시도와 새 attempt는 requestId로 구분합니다.
 15. 시험 AI 채점 실패를 오답으로 기록하지 않습니다. 미채점 결과는 null로 유지하고 미응답만 결정적 0점으로 처리합니다.
+16. 시험 응시 시작은 시험·사용자별 미소비 기록 하나로 멱등 처리하고, 성공한 제출만 같은 트랜잭션에서 이를 소비합니다.
 

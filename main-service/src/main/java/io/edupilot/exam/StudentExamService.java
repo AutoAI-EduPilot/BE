@@ -1,5 +1,6 @@
 package io.edupilot.exam;
 
+import java.time.Clock;
 import java.util.Set;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -11,14 +12,18 @@ import org.springframework.transaction.annotation.Transactional;
 
 import io.edupilot.classroom.ClassroomService;
 import io.edupilot.classroom.ClassroomStatus;
+import io.edupilot.exam.dto.ExamAttemptStartResponse;
 import io.edupilot.exam.dto.ExamSubmissionResponse;
 import io.edupilot.exam.dto.ExamSubmissionSummaryResponse;
 import io.edupilot.exam.dto.StudentExamDetailResponse;
 import io.edupilot.exam.dto.StudentExamListItemResponse;
 import io.edupilot.exam.dto.StudentExamListResponse;
+import io.edupilot.exam.dto.StudentExamSubmissionResponse;
 import io.edupilot.exam.dto.SubmitExamRequest;
 import io.edupilot.global.error.BusinessException;
 import io.edupilot.global.error.ErrorCode;
+import io.edupilot.user.User;
+import io.edupilot.user.UserRepository;
 import io.edupilot.user.UserRole;
 
 @Service
@@ -33,7 +38,11 @@ public class StudentExamService {
 	private final ExamQuestionRepository questionRepository;
 	private final ExamSubmissionRepository submissionRepository;
 	private final ExamAnswerRepository answerRepository;
+	private final ExamAttemptStartRepository attemptStartRepository;
+	private final ExamReviewPolicy reviewPolicy;
+	private final UserRepository userRepository;
 	private final ExamSubmissionPersistenceService persistenceService;
+	private final Clock clock;
 
 	public StudentExamService(
 		ClassroomService classroomService,
@@ -41,14 +50,22 @@ public class StudentExamService {
 		ExamQuestionRepository questionRepository,
 		ExamSubmissionRepository submissionRepository,
 		ExamAnswerRepository answerRepository,
-		ExamSubmissionPersistenceService persistenceService
+		ExamAttemptStartRepository attemptStartRepository,
+		ExamReviewPolicy reviewPolicy,
+		UserRepository userRepository,
+		ExamSubmissionPersistenceService persistenceService,
+		Clock clock
 	) {
 		this.classroomService = classroomService;
 		this.examRepository = examRepository;
 		this.questionRepository = questionRepository;
 		this.submissionRepository = submissionRepository;
 		this.answerRepository = answerRepository;
+		this.attemptStartRepository = attemptStartRepository;
+		this.reviewPolicy = reviewPolicy;
+		this.userRepository = userRepository;
 		this.persistenceService = persistenceService;
+		this.clock = clock;
 	}
 
 	@Transactional(readOnly = true)
@@ -122,6 +139,30 @@ public class StudentExamService {
 		}
 	}
 
+	public ExamAttemptStartResponse startAttempt(
+		Long userId,
+		UserRole role,
+		Long examId
+	) {
+		Exam exam = requirePublishedExam(userId, role, examId);
+		var existing = attemptStartRepository.findByExam_IdAndUser_Id(examId, userId);
+		if (existing.isPresent()) {
+			return startResponse(existing.orElseThrow());
+		}
+		User user = userRepository.findById(userId)
+			.filter(User::isActive)
+			.orElseThrow(() -> new BusinessException(ErrorCode.USER_NOT_FOUND));
+		try {
+			return startResponse(attemptStartRepository.saveAndFlush(
+				ExamAttemptStart.create(exam, user, clock.instant())
+			));
+		} catch (DataIntegrityViolationException exception) {
+			return attemptStartRepository.findByExam_IdAndUser_Id(examId, userId)
+				.map(this::startResponse)
+				.orElseThrow(() -> exception);
+		}
+	}
+
 	private boolean isSubmittable(Exam exam, ExamSubmission latest) {
 		return exam.getStatus() == ExamStatus.PUBLISHED
 			&& exam.getClassroomStatus() == ClassroomStatus.ACTIVE
@@ -131,13 +172,13 @@ public class StudentExamService {
 	}
 
 	@Transactional(readOnly = true)
-	public ExamSubmissionResponse mySubmission(
+	public StudentExamSubmissionResponse mySubmission(
 		Long userId,
 		UserRole role,
 		Long examId,
 		Integer attemptNo
 	) {
-		requireVisibleExam(userId, role, examId);
+		Exam exam = requireVisibleExam(userId, role, examId);
 		ExamSubmission submission = attemptNo == null
 			? submissionRepository.findTopByExam_IdAndUser_IdOrderByAttemptNoDesc(
 				examId, userId
@@ -145,7 +186,11 @@ public class StudentExamService {
 			: submissionRepository.findByExam_IdAndUser_IdAndAttemptNo(
 				examId, userId, attemptNo
 			).orElseThrow(() -> new BusinessException(ErrorCode.EXAM_NOT_FOUND));
-		return response(submission);
+		return StudentExamSubmissionResponse.from(
+			submission,
+			answerRepository.findBySubmission_IdOrderByQuestion_Id(submission.getId()),
+			reviewPolicy.isReviewAvailable(exam, submission)
+		);
 	}
 
 	@Transactional(readOnly = true)
@@ -171,6 +216,21 @@ public class StudentExamService {
 		}
 		classroomService.requireVisible(userId, role, exam.getClassroomId());
 		return exam;
+	}
+
+	private Exam requirePublishedExam(Long userId, UserRole role, Long examId) {
+		Exam exam = requireVisibleExam(userId, role, examId);
+		if (exam.getStatus() != ExamStatus.PUBLISHED) {
+			throw new BusinessException(ErrorCode.EXAM_NOT_PUBLISHED);
+		}
+		if (exam.getClassroomStatus() == ClassroomStatus.COMPLETED) {
+			throw new BusinessException(ErrorCode.CLASSROOM_COMPLETED);
+		}
+		return exam;
+	}
+
+	private ExamAttemptStartResponse startResponse(ExamAttemptStart attemptStart) {
+		return new ExamAttemptStartResponse(attemptStart.getStartedAt());
 	}
 
 	private ExamSubmissionResponse response(ExamSubmission submission) {
