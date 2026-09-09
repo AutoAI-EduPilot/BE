@@ -18,6 +18,7 @@ public record InstructorExamDetailResponse(
 	boolean allowRetake,
 	BigDecimal totalScore,
 	List<InstructorExamQuestionResponse> questions,
+	Instant dueAt,
 	Instant publishedAt,
 	Instant closedAt,
 	Instant createdAt,
@@ -32,7 +33,8 @@ public record InstructorExamDetailResponse(
 			exam.getWeekNumber(), exam.getStatus(), exam.isAllowRetake(),
 			exam.getTotalScore(),
 			questions.stream().map(InstructorExamQuestionResponse::from).toList(),
-			exam.getPublishedAt(), exam.getClosedAt(), exam.getCreatedAt(), exam.getUpdatedAt()
+			exam.getDueAt(), exam.getPublishedAt(), exam.getClosedAt(),
+			exam.getCreatedAt(), exam.getUpdatedAt()
 		);
 	}
 }

@@ -81,6 +81,7 @@ class ExamGradingRecoveryJpaTest {
 
 	@BeforeEach
 	void setUp() {
+		jdbcTemplate.update("delete from notifications");
 		answerRepository.deleteAll();
 		submissionRepository.deleteAll();
 		String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
@@ -197,6 +198,17 @@ class ExamGradingRecoveryJpaTest {
 		ExamSubmission graded = submissionRepository.findById(submission.getId()).orElseThrow();
 		assertThat(graded.getStatus()).isEqualTo(SubmissionStatus.GRADED);
 		assertThat(graded.getGradingRetryCount()).isEqualTo(1);
+		String dedupKey = "EXAM_GRADED:" + submission.getId() + ":" + learner.getId();
+		assertThat(jdbcTemplate.queryForObject(
+			"select count(*) from notifications where dedup_key = ?",
+			Integer.class,
+			dedupKey
+		)).isEqualTo(1);
+		assertThat(jdbcTemplate.queryForObject(
+			"select type from notifications where dedup_key = ?",
+			String.class,
+			dedupKey
+		)).isEqualTo("EXAM_GRADED");
 	}
 
 	@Test

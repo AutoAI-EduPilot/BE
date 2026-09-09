@@ -5,6 +5,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -648,6 +649,172 @@ class AuthApiContractTest {
 			.andExpect(header().string(HttpHeaders.SET_COOKIE, containsString(
 				"Max-Age=0"
 			)));
+	}
+
+	@Test
+	void passwordChangeReplacesLoginPasswordAndRevokesEveryRefreshToken() throws Exception {
+		when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+		when(userRepository.findByEmail("user@example.com")).thenReturn(Optional.of(user));
+		when(refreshTokenRepository.revokeAllActiveByUserId(any(), any())).thenReturn(2);
+		String accessToken = jwtTokenProvider.createAccessToken(user);
+
+		mockMvc.perform(patch("/api/users/me/password")
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"currentPassword":"password123","newPassword":"newPassword456"}
+					"""))
+			.andExpect(status().isOk())
+			.andExpect(header().string(HttpHeaders.CACHE_CONTROL, containsString(
+				"no-store"
+			)))
+			.andExpect(jsonPath("$.data.reauthenticationRequired").value(true))
+			.andExpect(content().string(not(containsString("password123"))))
+			.andExpect(content().string(not(containsString("newPassword456"))));
+
+		mockMvc.perform(post("/api/auth/login")
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"email":"user@example.com","password":"password123"}
+					"""))
+			.andExpect(status().isUnauthorized())
+			.andExpect(jsonPath("$.error.code").value("INVALID_CREDENTIALS"));
+
+		mockMvc.perform(post("/api/auth/login")
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"email":"user@example.com","password":"newPassword456"}
+					"""))
+			.andExpect(status().isOk());
+
+		verify(refreshTokenRepository).revokeAllActiveByUserId(
+			org.mockito.ArgumentMatchers.eq(1L),
+			any()
+		);
+	}
+
+	@Test
+	void activityTrackingFailureDoesNotFailAuthenticatedRequest() throws Exception {
+		User trackedUser = User.create(
+			"tracking@example.com",
+			passwordEncoder.encode("password123"),
+			"추적 실패 사용자"
+		);
+		ReflectionTestUtils.setField(trackedUser, "id", 4242L);
+		when(userRepository.updateLastActiveAt(
+			org.mockito.ArgumentMatchers.eq(4242L),
+			any()
+		)).thenThrow(new IllegalStateException("database unavailable"));
+		when(userRepository.findById(4242L)).thenReturn(Optional.of(trackedUser));
+
+		mockMvc.perform(get("/api/users/me")
+				.header(
+					HttpHeaders.AUTHORIZATION,
+					"Bearer " + jwtTokenProvider.createAccessToken(trackedUser)
+				))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.id").value(4242L));
+	}
+
+	@Test
+	void passwordChangeRejectsInvalidVariantsWithDedicatedErrors() throws Exception {
+		when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+		String accessToken = jwtTokenProvider.createAccessToken(user);
+
+		mockMvc.perform(patch("/api/users/me/password")
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"currentPassword":"wrong","newPassword":"newPassword456"}
+					"""))
+			.andExpect(status().isBadRequest())
+			.andExpect(jsonPath("$.error.code").value(
+				"CURRENT_PASSWORD_MISMATCH"
+			));
+
+		mockMvc.perform(patch("/api/users/me/password")
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"currentPassword":"password123","newPassword":"password123"}
+					"""))
+			.andExpect(status().isConflict())
+			.andExpect(jsonPath("$.error.code").value(
+				"PASSWORD_REUSE_NOT_ALLOWED"
+			));
+
+		mockMvc.perform(patch("/api/users/me/password")
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"currentPassword":"password123","newPassword":"short"}
+					"""))
+			.andExpect(status().isBadRequest())
+			.andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
+			.andExpect(jsonPath("$.error.details[0].field").value("newPassword"));
+
+		User googleUser = User.createGoogle(
+			"google@example.com",
+			"!google-account",
+			"구글 사용자",
+			UserRole.LEARNER,
+			null,
+			false,
+			null,
+			null,
+			null,
+			"google-sub"
+		);
+		ReflectionTestUtils.setField(googleUser, "id", 2L);
+		when(userRepository.findById(2L)).thenReturn(Optional.of(googleUser));
+
+		mockMvc.perform(patch("/api/users/me/password")
+				.header(
+					HttpHeaders.AUTHORIZATION,
+					"Bearer " + jwtTokenProvider.createAccessToken(googleUser)
+				)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"currentPassword":"unused","newPassword":"newPassword456"}
+					"""))
+			.andExpect(status().isConflict())
+			.andExpect(jsonPath("$.error.code").value("PASSWORD_NOT_SUPPORTED"));
+	}
+
+	@Test
+	void passwordChangeReturns429AfterFiveCurrentPasswordFailures() throws Exception {
+		User rateLimitedUser = User.create(
+			"rate-limited@example.com",
+			passwordEncoder.encode("password123"),
+			"제한 대상"
+		);
+		ReflectionTestUtils.setField(rateLimitedUser, "id", 99L);
+		when(userRepository.findById(99L)).thenReturn(Optional.of(rateLimitedUser));
+		String accessToken = jwtTokenProvider.createAccessToken(rateLimitedUser);
+
+		for (int attempt = 0; attempt < 5; attempt++) {
+			mockMvc.perform(patch("/api/users/me/password")
+					.header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+					.contentType(MediaType.APPLICATION_JSON)
+					.content("""
+						{"currentPassword":"wrong","newPassword":"newPassword456"}
+						"""))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.error.code").value(
+					"CURRENT_PASSWORD_MISMATCH"
+				));
+		}
+
+		mockMvc.perform(patch("/api/users/me/password")
+				.header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+					{"currentPassword":"password123","newPassword":"newPassword456"}
+					"""))
+			.andExpect(status().isTooManyRequests())
+			.andExpect(jsonPath("$.error.code").value(
+				"PASSWORD_CHANGE_RATE_LIMITED"
+			));
 	}
 
 	@Test

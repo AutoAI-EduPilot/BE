@@ -144,6 +144,29 @@ class NotificationApiContractTest {
 			.andExpect(jsonPath("$.error.code").value("RESOURCE_NOT_FOUND"));
 	}
 
+	@Test
+	void examNotificationTypeUsesClassroomAndExamLink() throws Exception {
+		var item = new NotificationResponse(
+			101L,
+			NotificationType.EXAM_GRADED,
+			"시험 채점이 완료되었습니다",
+			"시험 결과를 확인해 주세요.",
+			Map.of("classroomId", 30L, "examId", 80L),
+			null,
+			Instant.parse("2026-08-14T03:00:00Z")
+		);
+		when(notificationService.list(1L, 0, 20)).thenReturn(
+			new NotificationListResponse(List.of(item), 0, 20, 1, 1)
+		);
+
+		mockMvc.perform(get("/api/users/me/notifications")
+				.header(HttpHeaders.AUTHORIZATION, bearer()))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.items[0].type").value("EXAM_GRADED"))
+			.andExpect(jsonPath("$.data.items[0].link.classroomId").value(30))
+			.andExpect(jsonPath("$.data.items[0].link.examId").value(80));
+	}
+
 	private NotificationResponse response(Instant readAt) {
 		return new NotificationResponse(
 			100L,

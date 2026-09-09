@@ -1,10 +1,10 @@
 package io.edupilot.auth.dto;
 
 import io.edupilot.auth.validation.ValidEmail;
+import io.edupilot.auth.validation.ValidPassword;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 public record SignupRequest(
@@ -12,11 +12,7 @@ public record SignupRequest(
 	@Schema(example = "user@example.com")
 	String email,
 
-	@NotBlank(message = "비밀번호는 필수입니다.")
-	@Pattern(
-		regexp = "^(?=.*[A-Za-z])(?=.*\\d).{8,64}$",
-		message = "비밀번호는 8~64자이며 영문과 숫자를 각각 하나 이상 포함해야 합니다."
-	)
+	@ValidPassword
 	@Schema(accessMode = Schema.AccessMode.WRITE_ONLY, example = "password123")
 	String password,
 

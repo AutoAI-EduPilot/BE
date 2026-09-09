@@ -50,6 +50,12 @@ public class ExamSubmission {
 	@Column(name = "submitted_at", nullable = false)
 	private Instant submittedAt;
 
+	@Column(name = "started_at")
+	private Instant startedAt;
+
+	@Column(name = "duration_seconds")
+	private Integer durationSeconds;
+
 	@Column(name = "graded_at")
 	private Instant gradedAt;
 
@@ -111,6 +117,11 @@ public class ExamSubmission {
 		return new ExamSubmission(exam, user, attemptNo, requestId, maxScore, submittedAt);
 	}
 
+	public void recordAttemptTiming(Instant startedAt, Integer durationSeconds) {
+		this.startedAt = startedAt;
+		this.durationSeconds = durationSeconds;
+	}
+
 	public void complete(
 		BigDecimal score,
 		BigDecimal normalizedScore,
@@ -144,11 +155,14 @@ public class ExamSubmission {
 
 	public Long getId() { return id; }
 	public Long getExamId() { return exam.getId(); }
+	public Long getClassroomId() { return exam.getClassroomId(); }
 	public Long getUserId() { return user.getId(); }
 	public String getUserName() { return user.getName(); }
 	public int getAttemptNo() { return attemptNo; }
 	public String getRequestId() { return requestId; }
 	public SubmissionStatus getStatus() { return status; }
+	public Instant getStartedAt() { return startedAt; }
+	public Integer getDurationSeconds() { return durationSeconds; }
 	public Instant getSubmittedAt() { return submittedAt; }
 	public Instant getGradedAt() { return gradedAt; }
 	public BigDecimal getScore() { return score; }

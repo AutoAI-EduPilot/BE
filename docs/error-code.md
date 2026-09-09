@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 상태 | 초안 |
-| 마지막 갱신 | 2026-08-02 |
+| 마지막 갱신 | 2026-09-09 |
 | 코드 형식 | `UPPER_SNAKE_CASE` |
 
 ## 1. 응답 형식
@@ -75,6 +75,11 @@
 | `EMAIL_ALREADY_EXISTS` | 409 | 이메일 중복 |
 | `SIGNUP_REQUIRED` | 409 | Google 신규 가입을 위한 역할·약관 추가 정보 필요 |
 | `INVALID_CREDENTIALS` | 401 | 이메일/비밀번호 불일치 |
+| `PASSWORD_NOT_SUPPORTED` | 409 | LOCAL 비밀번호를 사용하지 않는 계정 |
+| `CURRENT_PASSWORD_MISMATCH` | 400 | 본인 비밀번호 변경 시 현재 비밀번호 불일치 |
+| `PASSWORD_REUSE_NOT_ALLOWED` | 409 | 현재 비밀번호와 같은 새 비밀번호 사용 시도 |
+| `PASSWORD_CHANGE_RATE_LIMITED` | 429 | 15분 내 현재 비밀번호 검증 실패 한도 도달 |
+| `PASSWORD_RESET_NOT_ALLOWED` | 409 | 비활성 사용자 또는 관리자 자신의 비밀번호 초기화 시도 |
 | `USER_INACTIVE` | 403 | 비활성/삭제 계정 |
 | `USER_NOT_FOUND` | 404 | 사용자 없음 |
 
@@ -154,6 +159,7 @@
 | `EXAM_NOT_EDITABLE` | 409 | CLOSED 시험을 publish하거나 공개 이후 수정·삭제하는 등 편집 가능한 상태가 아님 |
 | `EXAM_ALREADY_SUBMITTED` | 409 | 재응시가 허용되지 않은 GRADED 시험 또는 채점 중인 SUBMITTED 시험에 새 `requestId`로 다시 제출. SUBMITTED일 수 있으므로 FE는 기존 결과·polling 화면으로 유도 |
 | `INVALID_EXAM_ANSWER` | 400 | 알 수 없거나 중복된 문항 ID 또는 문항 유형과 맞지 않는 답안 |
+| `INVALID_EXAM_DUE_AT` | 400 | 생성·수정 요청에 명시한 `dueAt`이 현재 시각보다 미래가 아님. 수정에서 필드를 생략하거나 null로 제거하는 것은 허용 |
 
 ### 리포트
 

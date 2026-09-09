@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import respx
+from anyio import CancelScope
 from pydantic import BaseModel, SecretStr
 
 from edupilot_ai.core.errors import ErrorCategory
@@ -47,6 +48,20 @@ class DelayedAsyncByteStream(httpx.AsyncByteStream):
         for chunk in self._chunks:
             await asyncio.sleep(self._delay_seconds)
             yield chunk
+
+
+class CloseTrackingAsyncByteStream(httpx.AsyncByteStream):
+    def __init__(self, first_chunk: bytes) -> None:
+        self._first_chunk = first_chunk
+        self.closed = asyncio.Event()
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._first_chunk
+        await asyncio.Event().wait()
+
+    async def aclose(self) -> None:
+        await asyncio.sleep(0)
+        self.closed.set()
 
 
 def profile() -> AgentLlmProfile:
@@ -179,7 +194,7 @@ async def test_xai_bridge_uses_responses_wire_for_structured_file_attachment(
                 ],
             },
         ],
-        "reasoning_effort": "low",
+        "reasoning": {"effort": "low"},
         "max_output_tokens": 4096,
         "store": False,
         "text": {
@@ -528,17 +543,159 @@ async def test_xai_responses_stream_requires_successful_terminal_event(
     assert caught.value.retryable is True
 
 
-async def test_xai_responses_stream_rejects_delta_terminal_mismatch(
+async def test_xai_responses_stream_recovers_suffix_omitted_from_deltas(
+    caplog: pytest.LogCaptureFixture,
     respx_mock: respx.MockRouter,
 ) -> None:
+    delivered_text = "첨부 문서의 근거"
+    terminal_text = "첨부 문서의 근거입니다."
     mismatched_stream = responses_stream().replace(
-        '"text": "첨부 문서의 근거입니다."',
-        '"text": "종단 응답이 서로 다릅니다."',
+        '"delta": "근거입니다."',
+        '"delta": "근거"',
     )
     respx_mock.post(XAI_RESPONSES_URL).mock(
         return_value=httpx.Response(
             200,
             text=mismatched_stream,
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        bridge = XaiLlmBridge(client=client, api_key=SecretStr("xai-test-not-real"))
+        with caplog.at_level(logging.WARNING, logger="edupilot_ai.llm.xai"):
+            items = [
+                item
+                async for item in bridge.complete_text_stream(
+                    messages=[{"role": "user", "content": "PRIVATE-ANCHOR"}],
+                    profile=profile(),
+                    timeout_seconds=30,
+                    attachments=(LlmFileAttachment(file_id="file-test"),),
+                )
+            ]
+
+    assert "".join(item.text for item in items if isinstance(item, LlmTextDelta)) == (terminal_text)
+    completed = items[-1]
+    assert isinstance(completed, LlmTextStreamCompleted)
+    assert completed.usage == LlmUsage(
+        model="grok-4.5",
+        input_tokens=31,
+        output_tokens=12,
+        reasoning_tokens=4,
+    )
+    mismatch_log = next(
+        record
+        for record in caplog.records
+        if record.message == "xAI Responses stream omitted a terminal text suffix"
+    )
+    assert mismatch_log.__dict__["model"] == "grok-4.5"
+    assert mismatch_log.__dict__["deltaChars"] == len(delivered_text)
+    assert mismatch_log.__dict__["terminalChars"] == len(terminal_text)
+    assert mismatch_log.__dict__["recoveredChars"] == len("입니다.")
+    assert delivered_text not in caplog.text
+    assert terminal_text not in caplog.text
+    assert "PRIVATE-ANCHOR" not in caplog.text
+
+
+async def test_xai_responses_stream_recovers_terminal_text_without_any_delta(
+    respx_mock: respx.MockRouter,
+) -> None:
+    stream_body = (
+        "data: "
+        + json.dumps(
+            {
+                "type": "response.completed",
+                "response": responses_response(content="종단에만 있는 응답"),
+            },
+            ensure_ascii=False,
+        )
+        + "\n\n"
+    )
+    respx_mock.post(XAI_RESPONSES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            text=stream_body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        bridge = XaiLlmBridge(client=client, api_key=SecretStr("xai-test-not-real"))
+        items = [
+            item
+            async for item in bridge.complete_text_stream(
+                messages=[{"role": "user", "content": "anchor"}],
+                profile=profile(),
+                timeout_seconds=30,
+                attachments=(LlmFileAttachment(file_id="file-test"),),
+            )
+        ]
+
+    assert isinstance(items[0], LlmTextDelta)
+    assert items[0].text == "종단에만 있는 응답"
+    assert isinstance(items[-1], LlmTextStreamCompleted)
+
+
+async def test_xai_responses_stream_rejects_divergent_terminal_text(
+    respx_mock: respx.MockRouter,
+) -> None:
+    delivered_text = "첨부 문서의 근거입니다."
+    terminal_text = "종단 응답이 서로 다릅니다."
+    mismatched_stream = responses_stream().replace(
+        f'"text": "{delivered_text}"',
+        f'"text": "{terminal_text}"',
+    )
+    respx_mock.post(XAI_RESPONSES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            text=mismatched_stream,
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        bridge = XaiLlmBridge(client=client, api_key=SecretStr("xai-test-not-real"))
+        with pytest.raises(LlmBridgeError) as caught:
+            _ = [
+                item
+                async for item in bridge.complete_text_stream(
+                    messages=[{"role": "user", "content": "anchor"}],
+                    profile=profile(),
+                    timeout_seconds=30,
+                    attachments=(LlmFileAttachment(file_id="file-test"),),
+                )
+            ]
+
+    assert caught.value.category is ErrorCategory.SCHEMA
+    assert caught.value.retryable is False
+
+
+async def test_xai_responses_stream_rejects_malformed_terminal_after_delta(
+    respx_mock: respx.MockRouter,
+) -> None:
+    stream_body = "\n\n".join(
+        [
+            "data: "
+            + json.dumps(
+                {"type": "response.output_text.delta", "delta": "이미 전달된 본문"},
+                ensure_ascii=False,
+            ),
+            "data: "
+            + json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            "",
+        ]
+    )
+    respx_mock.post(XAI_RESPONSES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            text=stream_body,
             headers={"Content-Type": "text/event-stream"},
         )
     )
@@ -1109,6 +1266,76 @@ def stream_response(*, usage: object = _DEFAULT_STREAM_USAGE) -> str:
     frames = [f"data: {json.dumps(chunk, ensure_ascii=False)}" for chunk in chunks]
     frames.append("data: [DONE]")
     return "\n\n".join(frames) + "\n\n"
+
+
+async def test_xai_stream_closes_http_response_during_anyio_cancellation(
+    respx_mock: respx.MockRouter,
+) -> None:
+    first_frame = stream_response().split("\n\n", 1)[0] + "\n\n"
+    provider_stream = CloseTrackingAsyncByteStream(first_frame.encode())
+    respx_mock.post(XAI_CHAT_COMPLETIONS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            stream=provider_stream,
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        bridge = XaiLlmBridge(
+            client=client,
+            api_key=SecretStr("xai-test-not-real"),
+        )
+        stream = bridge.complete_text_stream(
+            messages=[{"role": "user", "content": "test"}],
+            profile=profile(),
+            timeout_seconds=30,
+        ).__aiter__()
+        first_item = await anext(stream)
+        with CancelScope() as cancel_scope:
+            cancel_scope.cancel()
+            await anext(stream)
+
+    assert isinstance(first_item, LlmTextDelta)
+    assert provider_stream.closed.is_set()
+
+
+async def test_xai_file_stream_closes_child_response_during_cancellation(
+    respx_mock: respx.MockRouter,
+) -> None:
+    first_frame = (
+        "data: "
+        + json.dumps(
+            {"type": "response.output_text.delta", "delta": "첫 델타"},
+            ensure_ascii=False,
+        )
+        + "\n\n"
+    )
+    provider_stream = CloseTrackingAsyncByteStream(first_frame.encode())
+    respx_mock.post(XAI_RESPONSES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            stream=provider_stream,
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        bridge = XaiLlmBridge(
+            client=client,
+            api_key=SecretStr("xai-test-not-real"),
+        )
+        stream = bridge.complete_text_stream(
+            messages=[{"role": "user", "content": "test"}],
+            profile=profile(),
+            timeout_seconds=30,
+            attachments=(LlmFileAttachment(file_id="file-test"),),
+        ).__aiter__()
+        first_item = await anext(stream)
+        with CancelScope() as cancel_scope:
+            cancel_scope.cancel()
+            await anext(stream)
+
+    assert isinstance(first_item, LlmTextDelta)
+    assert provider_stream.closed.is_set()
 
 
 async def test_xai_bridge_streams_markdown_without_response_format(

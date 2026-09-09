@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 상태 | 계약 초안 |
-| 마지막 갱신 | 2026-09-01 |
+| 마지막 갱신 | 2026-09-09 |
 | 외부 호출자 | Frontend |
 | 내부 호출자 | Spring → FastAPI |
 
@@ -60,6 +60,7 @@
 | GET | `/api/health/ready` | DB·AI Service readiness ([응답 계약](issues/11-observability.md)) | N | 전체 |
 | GET | `/api/users/me` | 내 정보 조회 | Y | 본인 |
 | PATCH | `/api/users/me` | 내 프로필 수정 | Y | 본인 |
+| PATCH | `/api/users/me/password` | 내 비밀번호 변경 | Y | 본인 LOCAL 계정 |
 | POST | `/api/users/me/avatar` | 내 아바타 업로드·교체 | Y | 본인 |
 | GET | `/api/users/me/avatar` | 내 아바타 스트리밍 | Y | 본인 |
 | DELETE | `/api/users/me/avatar` | 내 아바타 삭제 | Y | 본인 |
@@ -100,6 +101,7 @@
 | POST | `/api/exams/{examId}/publish` | 시험 공개 | Y | 소유 INSTRUCTOR |
 | POST | `/api/exams/{examId}/close` | 시험 마감 | Y | 소유 INSTRUCTOR |
 | DELETE | `/api/exams/{examId}` | DRAFT 시험 삭제 | Y | 소유 INSTRUCTOR |
+| POST | `/api/exams/{examId}/attempts/start` | 시험 응시 시작 시각 기록 | Y | 승인 LEARNER 멤버 |
 | POST | `/api/exams/{examId}/submissions` | 별도 시험 제출 | Y | 승인 멤버 |
 | GET | `/api/exams/{examId}/submissions` | 시험별 최신 대표 제출 목록 | Y | 소유 INSTRUCTOR |
 | GET | `/api/exams/{examId}/submissions/{submissionId}` | 특정 시험 제출 상세 | Y | 소유 INSTRUCTOR |
@@ -112,6 +114,7 @@
 | GET | `/api/classrooms/{id}` | 강의실 상세 | Y | 소유 INSTRUCTOR 또는 승인 멤버 |
 | GET | `/api/admin/users` | 관리자 회원 목록 조회 | Y | ADMIN + DB role/status 재검증 |
 | GET | `/api/admin/users/{id}` | 관리자 회원 상세 조회 | Y | ADMIN + DB role/status 재검증 |
+| POST | `/api/admin/users/{id}/password-reset` | 관리자 사용자 비밀번호 초기화 | Y | ADMIN + DB role/status 재검증; 타 LOCAL/ACTIVE 사용자 |
 | GET | `/api/admin/classrooms` | 관리자 강의실 목록 조회 | Y | ADMIN + DB role/status 재검증 |
 | GET | `/api/admin/classrooms/{id}` | 관리자 강의실 상세 조회 | Y | ADMIN + DB role/status 재검증 |
 | GET | `/api/admin/ai-usage/summary` | 관리자 AI 사용량 일별·기능별 집계 | Y | ADMIN + DB role/status 재검증 |
@@ -321,6 +324,27 @@ login의 `user`와 같은 사용자 필드를 반환합니다. 기존 계정은 
 ```
 
 두 필드는 부분 수정입니다. `name`은 공백 제거 후 1~100자이고, `affiliation`은 생략하면 유지하며 빈 문자열이면 `null`로 해제합니다. 변경 필드가 없으면 `VALIDATION_FAILED`입니다. 성공 시 GET users/me와 같은 사용자 응답을 반환합니다.
+
+### PATCH `/api/users/me/password`
+
+```json
+{
+  "currentPassword": "password123",
+  "newPassword": "newPassword456"
+}
+```
+
+`newPassword`에는 회원가입과 같은 비밀번호 정책(8~64자, 영문·숫자 각 1자 이상)을 적용합니다. `LOCAL` 계정만 사용할 수 있고, 현재 비밀번호가 일치해야 하며 현재 비밀번호와 같은 새 비밀번호는 거부합니다. 현재 비밀번호 검증에 5회 실패하면 마지막 실패부터 15분 동안 사용자 ID 기준으로 요청을 제한합니다. 성공하면 실패 횟수를 초기화합니다.
+
+이 요청에서는 현재 브라우저의 refresh token을 식별할 수 없으므로 성공 시 해당 사용자의 활성 refresh token을 **전량 폐기**합니다. `data`는 다음과 같으며, FE는 `reauthenticationRequired=true`를 받으면 보유 access token을 삭제하고 로그인 화면으로 이동해야 합니다. 기존 access token은 stateless JWT이므로 만료 전까지 서버에서 개별 폐기할 수 없습니다.
+
+```json
+{
+  "reauthenticationRequired": true
+}
+```
+
+응답은 `Cache-Control: private, no-store`입니다. 주요 오류: `PASSWORD_NOT_SUPPORTED`(409), `CURRENT_PASSWORD_MISMATCH`(400), `PASSWORD_REUSE_NOT_ALLOWED`(409), `PASSWORD_CHANGE_RATE_LIMITED`(429), `VALIDATION_FAILED`(400).
 
 ### POST `/api/users/me/avatar`
 
@@ -1098,6 +1122,7 @@ MVP의 제출 후 파이프라인은 동기 방식입니다. Spring은 제출·�
 - 소유 `INSTRUCTOR`는 본인 강의실의 DRAFT·PUBLISHED·CLOSED 시험을 관리하고 정답·모범 답안·rubric을 포함한 강사 뷰를 조회합니다. 역할 부족은 `ACCESS_DENIED`(403), 다른 강사 소유권은 `CLASSROOM_NOT_FOUND`(404)로 처리합니다.
 - 승인 멤버는 PUBLISHED·CLOSED 시험만 목록·상세 조회할 수 있습니다. DRAFT 시험은 상세와 제출 경로에서도 `EXAM_NOT_FOUND`(404)로 은닉합니다.
 - 시험 노출은 `exams.status`만으로 결정합니다. `weekNumber`는 표시·집계 라벨이며 주차 공개 상태에 종속되지 않습니다.
+- 모든 강사·학습자 시험 목록/상세 응답은 nullable `dueAt`을 ISO 8601 UTC로 반환합니다. `dueAt`은 표시·알림 기준일 뿐이며 경과해도 제출을 막거나 시험을 자동으로 CLOSED 전환하지 않습니다.
 - 완료 강의실은 시험 생성·수정·공개·학생 제출을 `CLASSROOM_COMPLETED`(409)로 차단합니다. 기존 PUBLISHED 시험 close와 DRAFT 시험 삭제는 정리 작업으로 허용합니다.
 
 #### 강사 API
@@ -1124,6 +1149,7 @@ MVP의 제출 후 파이프라인은 동기 방식입니다. Spring은 제출·�
   "description": "1~4주차 핵심 개념",
   "weekNumber": 4,
   "allowRetake": false,
+  "dueAt": "2026-09-30T14:59:59Z",
   "questions": [
     {
       "questionType": "SHORT",
@@ -1137,6 +1163,7 @@ MVP의 제출 후 파이프라인은 동기 방식입니다. Spring은 제출·�
 ```
 
 - `title`은 공백이 아닌 최대 200자, `description`은 nullable 최대 500자입니다. `weekNumber`는 nullable이며 값이 있으면 `1 <= weekNumber <= weekCount`입니다.
+- `dueAt`은 nullable ISO 8601 UTC이며 생성·수정에서 non-null 값을 명시하면 요청 처리 시각보다 미래여야 합니다. PATCH에서 생략하면 유지하고 `null`이면 제거합니다. 위반은 `INVALID_EXAM_DUE_AT`(400)입니다.
 - DRAFT 저장에서는 문항 0개와 불완전한 rubric weight 합을 허용합니다. publish 시 문항 1개 이상, `totalScore > 0`, 유형별 정답·모범 답안 비공백, 입력된 rubric의 weight 합 1.0을 검증합니다.
 - rubric 키 생략, null, 빈 배열은 모두 미입력입니다. 미입력 SHORT/ESSAY는 grade 호출 시 서버가 `[{"criterion":"모범 답안 부합도","weight":1.0}]`을 주입합니다.
 - publish를 CLOSED에서 호출하거나 공개 이후 수정·삭제하면 `EXAM_NOT_EDITABLE`(409)입니다. close를 DRAFT에서 호출하면 `EXAM_NOT_PUBLISHED`(409)입니다.
@@ -1196,12 +1223,28 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 
 | Method | URL | 계약 |
 | --- | --- | --- |
-| GET | `/api/classrooms/{classroomId}/exams?page&size` | PUBLISHED·CLOSED 목록과 본인 최신 제출 요약·`submittable`을 반환합니다. GRADING_FAILED 최신 시도는 재제출 가능으로 계산합니다. |
-| GET | `/api/exams/{examId}` | 공개 문항과 `submittable`만 반환합니다. |
+| GET | `/api/classrooms/{classroomId}/exams?page&size` | PUBLISHED·CLOSED 목록, nullable `dueAt`, 본인 최신 제출 요약·`submittable`을 반환합니다. GRADING_FAILED 최신 시도는 재제출 가능으로 계산합니다. |
+| GET | `/api/exams/{examId}` | 공개 문항, nullable `dueAt`, `submittable`만 반환합니다. |
+| POST | `/api/exams/{examId}/attempts/start` | PUBLISHED 시험의 응시 시작 시각을 기록합니다. 동일 시험·사용자의 미소비 기록이 있으면 같은 `startedAt`을 반환합니다. |
 | POST | `/api/exams/{examId}/submissions` | PUBLISHED 시험을 제출합니다. 주관식 AI 채점이 필요하면 `SUBMITTED`/202, 아니면 `GRADED`/200입니다. 두 응답은 같은 봉투와 `ExamSubmissionResponse` 스키마입니다. |
-| GET | `/api/exams/{examId}/submissions/me?attemptNo=` | 본인 결과를 조회하며 attemptNo 생략 시 최신 시도입니다. |
+| GET | `/api/exams/{examId}/submissions/me?attemptNo=` | 본인 결과를 조회하며 attemptNo 생략 시 최신 시도입니다. 공개 정책과 응시 시간 필드를 포함합니다. |
 
-학생 문항 DTO는 `questionId`, `questionText`, `maxScore`, `questionType`, `options`만 포함합니다. 정답·해설·모범 답안·rubric은 DEC-031 D4 확정 전까지 제출 후에도 반환하지 않습니다.
+학생 시험 목록·상세의 문항 DTO는 `questionId`, `questionText`, `maxScore`, `questionType`, `options`만 포함합니다. 본인 결과 조회에서만 `reviewAvailable=true`일 때 문항별 `correctAnswer`, `explanation`을 추가하며 `rubric`과 비공개 정답 원본은 항상 제외합니다.
+
+응시 화면 진입 시 한 번 호출합니다. 같은 시험·사용자의 시작 기록은 제출 성공 시까지 유지되므로 새로고침·재진입·동시 호출로 시간이 초기화되지 않습니다.
+
+```json
+{
+  "success": true,
+  "data": {
+    "startedAt": "2026-08-02T11:58:30Z"
+  },
+  "error": null
+}
+```
+
+- LEARNER 승인 멤버와 PUBLISHED 시험만 시작할 수 있습니다. DRAFT는 `EXAM_NOT_FOUND`(404)로 은닉하고 CLOSED는 `EXAM_NOT_PUBLISHED`(409)로 거부합니다.
+- 시작 API를 호출하지 않은 구버전 클라이언트도 제출할 수 있으며, 이 경우 결과의 `startedAt`, `durationSeconds`는 null입니다.
 
 제출 요청:
 
@@ -1222,7 +1265,7 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 - 최신 제출이 `GRADED`이면 `allowRetake=false`에서 새 requestId를 거부하고, `allowRetake=true`이면 다음 attemptNo를 생성합니다. `GRADING_FAILED`는 응시권을 소모하지 않아 allowRetake와 무관하게 새 requestId로 다음 attempt를 생성할 수 있습니다.
 - DRAFT 제출은 `EXAM_NOT_FOUND`(404)로 은닉하고 CLOSED 제출은 `EXAM_NOT_PUBLISHED`(409)로 거부합니다.
 
-제출·본인 결과 응답의 공통 형태:
+제출 응답의 형태:
 
 ```json
 {
@@ -1247,9 +1290,47 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 }
 ```
 
+본인 결과 조회는 제출 응답 필드에 다음 필드를 추가합니다.
+
+```json
+{
+  "submissionId": 300,
+  "attemptNo": 1,
+  "status": "GRADED",
+  "reviewAvailable": true,
+  "score": 80.00,
+  "maxScore": 100.00,
+  "normalizedScore": 80.00,
+  "startedAt": "2026-08-02T11:58:30Z",
+  "durationSeconds": 90,
+  "submittedAt": "2026-08-02T12:00:00Z",
+  "gradedAt": "2026-08-02T12:00:01Z",
+  "items": [
+    {
+      "questionId": "q1",
+      "answer": "a",
+      "score": 20.00,
+      "maxScore": 20.00,
+      "verdict": "CORRECT",
+      "feedback": null,
+      "correctAnswer": {
+        "choiceId": "a",
+        "text": "정답 선택지"
+      },
+      "explanation": "정답 해설"
+    }
+  ]
+}
+```
+
+- `reviewAvailable = exam.status == CLOSED || (!exam.allowRetake && submission.status == GRADED)`입니다.
+- `reviewAvailable=false`이면 각 item의 `correctAnswer`, `explanation` 키를 null로 보내지 않고 응답에서 완전히 생략합니다.
+- `correctAnswer`는 MCQ에서 `{choiceId,text}`, OX에서 boolean, SHORT/ESSAY에서 `modelAnswer` 우선·없으면 `referenceAnswer` 문자열이며 둘 다 없으면 null입니다.
+- `startedAt`과 `durationSeconds`는 제출이 소비한 시작 기록을 나타냅니다. 기존 제출이나 시작 API 미호출 제출은 둘 다 null이며 FE는 `-`로 표시합니다.
+
 - HTTP 202 응답 본문은 200과 동일한 API envelope 및 `ExamSubmissionResponse` 스키마입니다. FE는 HTTP 상태코드가 아니라 응답의 `status` 필드로 화면과 polling 여부를 분기합니다.
 - `SUBMITTED`에서는 `score`, `normalizedScore`, `gradedAt`과 모든 문항의 `score`, `verdict`, `feedback`을 null로 반환합니다. MCQ/OX 결과가 내부에서 이미 계산됐어도 terminal 상태 전에는 마스킹합니다. `answer`, `maxScore`, `questionId=q{questionNo}`는 유지합니다.
-- 학생 목록·상세·제출 결과에는 `answerChoiceId`, `answerValue`, `explanation`, `referenceAnswer`, `modelAnswer`, `rubric`, `privateAnswer`, `isCorrect` 키를 포함하지 않습니다.
+- 학생 목록·상세와 POST 제출 응답에는 `correctAnswer`, `explanation`을 포함하지 않습니다. 본인 결과 GET도 명시적 `correctAnswer`, `explanation` 외에 `answerChoiceId`, `answerValue`, `referenceAnswer`, `modelAnswer`, `rubric`, `privateAnswer`, `isCorrect` 키를 포함하지 않습니다.
 - POST가 `SUBMITTED`를 반환하면 기존 `GET /api/exams/{examId}/submissions/me`를 2초 간격으로 polling하고, 30초 뒤 5초 간격으로 전환합니다. `GRADED | GRADING_FAILED`에서 즉시 중단합니다. 31분을 넘기면 채점 지연 안내를 표시하되 polling은 유지하고, 세 번의 30분 채점 창과 scheduler 지연을 포함한 91분을 넘겨도 `SUBMITTED`이면 마지막 조회 후 중단하고 문의 안내를 표시합니다.
 
 #### 채점·실패 계약
@@ -1278,7 +1359,7 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 }
 ```
 
-기존 사용자와 미설정 사용자의 기본값은 `true`, `true`, `NORMAL`입니다. 이메일·푸시와 학습 리마인더 발송은 범위 밖이며, 인앱 알림은 아래 네 가지 트리거에 한해 제공합니다.
+기존 사용자와 미설정 사용자의 기본값은 `true`, `true`, `NORMAL`입니다. 이메일·푸시와 학습 리마인더 발송은 범위 밖이며, 인앱 알림은 아래 일곱 가지 트리거에 한해 제공합니다.
 
 ### PATCH `/api/users/me/preferences`
 
@@ -1330,7 +1411,7 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 }
 ```
 
-`type`과 `link`의 리소스 참조는 다음 네 종류입니다.
+`type`과 `link`의 리소스 참조는 다음 일곱 종류입니다.
 
 | type | 수신자·생성 시점 | link |
 | --- | --- | --- |
@@ -1338,8 +1419,11 @@ AI 응답의 `usage`는 서버 비용 기록에만 사용하며 외부 API 응�
 | `NOTICE_PUBLISHED` | 즉시 공지는 생성·게시 시, 예약 공지는 `publishAt` 도래 후 승인 멤버 전원 | `{classroomId, noticeId}` |
 | `JOIN_REQUEST_RECEIVED` | 입장 요청·재요청 시 강의실 소유 강사 | `{classroomId, joinRequestId}` |
 | `JOIN_REQUEST_PROCESSED` | 입장 요청 승인·거절 시 요청 학생 | `{classroomId, joinRequestId}` |
+| `EXAM_PUBLISHED` | 시험 공개 커밋 후 해당 강의실 승인·ACTIVE 학습자 전원 | `{classroomId, examId}` |
+| `EXAM_DEADLINE_APPROACHING` | 매일 09:00 KST, `dueAt`의 KST 날짜 기준 D-3·D-1인 PUBLISHED 시험의 미제출 승인·ACTIVE 학습자 | `{classroomId, examId}` |
+| `EXAM_GRADED` | 비동기 제출이 GRADED로 전환된 커밋 후 해당 제출 학습자 | `{classroomId, examId}` |
 
-예약 공지는 30초 주기 스캔에서 수신자 bulk insert와 공지의 발송 표식을 한 트랜잭션으로 처리해 한 번만 생성합니다. 알림은 생성 후 30일이 지나면 배치로 물리 삭제합니다.
+예약 공지는 30초 주기 스캔에서 수신자 bulk insert와 공지의 발송 표식을 한 트랜잭션으로 처리해 한 번만 생성합니다. 시험 알림은 `EXAM_PUBLISHED:{examId}:{userId}`, `EXAM_DEADLINE:{examId}:{userId}:D3|D1`, `EXAM_GRADED:{submissionId}:{userId}` dedup 키의 DB UNIQUE 제약을 최종 방어선으로 사용합니다. 미제출은 해당 시험에 상태와 무관하게 제출 행이 한 건도 없다는 뜻입니다. 마감 스케줄러는 `EDUPILOT_NOTIFICATION_EXAM_DEADLINE_ENABLED`(기본 `true`)로 중단할 수 있습니다. 알림은 생성 후 30일이 지나면 배치로 물리 삭제합니다.
 
 ### PATCH `/api/users/me/notifications/{notificationId}/read`
 
@@ -2238,30 +2322,67 @@ evidence는 결과가 참조한 항목만 `evidenceId`, `sourceType`, `publicLab
 `minimalFact`, hash와 generation lease 정보는 외부 응답에 포함하지 않습니다. 없는 리포트는
 `REPORT_NOT_FOUND`(404)입니다.
 
-## 7.4 관리자 조회 API
+## 7.4 관리자 API
 
 모든 `/api/admin/**` 요청은 JWT의 `ROLE_ADMIN` URL 규칙, 컨트롤러의
 `@PreAuthorize("hasRole('ADMIN')")`, 요청 시점 DB의 `ADMIN/ACTIVE` 재검증을 모두
-통과해야 합니다. 이 API 묶음은 읽기 전용이며 역할·상태 변경, 회원 탈퇴, 강의실 조작 같은
-쓰기 API는 제공하지 않습니다.
+통과해야 합니다. 관리자 API는 원칙적으로 읽기 전용이며 역할·상태 변경, 회원 탈퇴, 강의실
+조작 API는 제공하지 않습니다. 비밀번호 초기화는 이미 수행 중인 운영 수작업을 감사 가능한
+안전 경로로 바꾸고 대상자가 다음 로그인에서 즉시 인지하는 행위이므로 아래 한 개의 명시적
+쓰기 예외만 제공합니다.
 
 ### GET `/api/admin/users?q=&role=&status=&sort=&page=&size=`
 
 - `q`: 이메일 또는 이름 부분일치, 대소문자 무시
 - `role`: 선택 `ADMIN | INSTRUCTOR | LEARNER`
 - `status`: 선택 `ACTIVE | DELETED`; 생략하면 탈퇴 사용자를 포함한 전체
-- `sort`: `RECENT` 기본(`createdAt DESC, id DESC`) 또는 `NAME`
+- `sort`: `RECENT` 기본(`createdAt DESC, id DESC`), `NAME`,
+  `RECENT_ACTIVITY_DESC`, `RECENT_ACTIVITY_ASC`
 - `page`/`size`: 기본 0/20, size 최대 100
 
 목록은 `items`, `page`, `size`, `totalElements`, `totalPages`를 반환합니다. 각 item은
-`id`, `email`, `name`, `role`, `status`, `authProvider`, `createdAt`만 포함합니다.
+`id`, `email`, `name`, `role`, `status`, `authProvider`, `createdAt`,
+`lastActiveAt`을 포함합니다. `lastActiveAt`은 인증된 API 요청 시각이며
+`/api/auth/refresh` 성공도 활동에 포함합니다. 값은 ISO 8601 UTC이고, 활동 근거가 없으면
+`null`입니다. 같은 사용자의 DB 갱신은 5분에 한 번으로 제한하므로 상대 시간 표시는 최대
+5분의 오차가 있을 수 있습니다.
+
+`RECENT_ACTIVITY_DESC`는 `lastActiveAt DESC, id DESC`,
+`RECENT_ACTIVITY_ASC`는 `lastActiveAt ASC, id ASC`입니다. 두 방향 모두
+`lastActiveAt=null`인 사용자를 마지막에 배치합니다. 기존 `RECENT`는 가입일 기준 의미를
+유지합니다.
+
 `passwordHash`, `googleSub`, refresh token 등 크리덴셜 필드는 관리자 DTO에 정의하지 않아
 직렬화 경로 자체에서 차단합니다.
 
 ### GET `/api/admin/users/{id}`
 
-목록 필드에 `affiliation`, `consentedAt`을 추가한 상세를 반환합니다. 없는 사용자는
-`USER_NOT_FOUND`(404)입니다.
+`id`, `email`, `name`, `role`, `status`, `authProvider`, `createdAt`,
+`affiliation`, `consentedAt`을 반환합니다. `lastActiveAt` 추가 범위는 회원 목록 item입니다.
+없는 사용자는 `USER_NOT_FOUND`(404)입니다.
+
+### POST `/api/admin/users/{id}/password-reset`
+
+요청 body 없이 path의 사용자 ID만 사용합니다. 대상은 다른 `LOCAL/ACTIVE` 사용자여야 하며
+관리자 자신의 초기화는 본인 변경 API를 사용하도록 거부합니다. 서버가 회원가입 정책을
+충족하는 16자 임시 비밀번호를 `SecureRandom`으로 생성해 BCrypt 해시만 저장하고 대상자의
+활성 refresh token을 전량 폐기합니다.
+
+`data`:
+
+```json
+{
+  "temporaryPassword": "응답에서만 제공되는 16자 값",
+  "message": "로그인 후 즉시 변경 안내"
+}
+```
+
+임시 비밀번호는 이 응답에서 한 번만 전달되며 DB 평문·감사 로그에 저장하지 않습니다. 응답은
+`Cache-Control: private, no-store`입니다. FE는 재조회가 불가능함을 알리는 모달에서 값을 한
+번 표시하고 복사 버튼을 제공해야 합니다. 감사 로그에는 `actorUserId`, `targetUserId`,
+`action=ADMIN_PASSWORD_RESET`, 시각만 INFO 구조화 필드로 남깁니다. 주요 오류:
+`USER_NOT_FOUND`(404), `PASSWORD_NOT_SUPPORTED`(409), `PASSWORD_RESET_NOT_ALLOWED`(409),
+비ADMIN 또는 요청 시점 DB의 비활성·비ADMIN actor는 `ACCESS_DENIED`(403).
 
 ### GET `/api/admin/classrooms?sort=&page=&size=`
 

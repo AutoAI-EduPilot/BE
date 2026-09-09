@@ -14,7 +14,8 @@ public record AdminUserResponse(
 	UserRole role,
 	UserStatus status,
 	AuthProvider authProvider,
-	Instant createdAt
+	Instant createdAt,
+	Instant lastActiveAt
 ) {
 	public static AdminUserResponse from(User user) {
 		return new AdminUserResponse(
@@ -24,7 +25,8 @@ public record AdminUserResponse(
 			user.getRole(),
 			user.getStatus(),
 			user.getAuthProvider(),
-			user.getCreatedAt()
+			user.getCreatedAt(),
+			user.getLastActiveAt()
 		);
 	}
 }

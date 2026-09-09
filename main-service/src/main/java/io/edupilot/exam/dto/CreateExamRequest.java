@@ -1,5 +1,6 @@
 package io.edupilot.exam.dto;
 
+import java.time.Instant;
 import java.util.List;
 
 import jakarta.validation.Valid;
@@ -12,6 +13,7 @@ public record CreateExamRequest(
 	@Size(max = 500) String description,
 	@Min(1) Integer weekNumber,
 	Boolean allowRetake,
+	Instant dueAt,
 	List<@Valid ExamQuestionRequest> questions
 ) {
 }

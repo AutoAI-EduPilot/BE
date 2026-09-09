@@ -57,6 +57,9 @@ public class Exam {
 	@Column(name = "closed_at")
 	private Instant closedAt;
 
+	@Column(name = "due_at")
+	private Instant dueAt;
+
 	@CreationTimestamp
 	@Column(name = "created_at", nullable = false, updatable = false)
 	private Instant createdAt;
@@ -73,7 +76,8 @@ public class Exam {
 		Integer weekNumber,
 		String title,
 		String description,
-		boolean allowRetake
+		boolean allowRetake,
+		Instant dueAt
 	) {
 		this.classroom = classroom;
 		this.weekNumber = weekNumber;
@@ -81,6 +85,7 @@ public class Exam {
 		this.description = description;
 		this.status = ExamStatus.DRAFT;
 		this.allowRetake = allowRetake;
+		this.dueAt = dueAt;
 		this.totalScore = BigDecimal.ZERO;
 	}
 
@@ -91,7 +96,20 @@ public class Exam {
 		String description,
 		boolean allowRetake
 	) {
-		return new Exam(classroom, weekNumber, title, description, allowRetake);
+		return create(classroom, weekNumber, title, description, allowRetake, null);
+	}
+
+	public static Exam create(
+		Classroom classroom,
+		Integer weekNumber,
+		String title,
+		String description,
+		boolean allowRetake,
+		Instant dueAt
+	) {
+		return new Exam(
+			classroom, weekNumber, title, description, allowRetake, dueAt
+		);
 	}
 
 	public void update(
@@ -100,7 +118,9 @@ public class Exam {
 		String description,
 		boolean weekNumberPresent,
 		Integer weekNumber,
-		Boolean allowRetake
+		Boolean allowRetake,
+		boolean dueAtPresent,
+		Instant dueAt
 	) {
 		if (title != null) {
 			this.title = title;
@@ -113,6 +133,9 @@ public class Exam {
 		}
 		if (allowRetake != null) {
 			this.allowRetake = allowRetake;
+		}
+		if (dueAtPresent) {
+			this.dueAt = dueAt;
 		}
 	}
 
@@ -180,6 +203,10 @@ public class Exam {
 
 	public Instant getClosedAt() {
 		return closedAt;
+	}
+
+	public Instant getDueAt() {
+		return dueAt;
 	}
 
 	public Instant getCreatedAt() {

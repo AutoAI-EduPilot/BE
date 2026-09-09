@@ -106,6 +106,7 @@ class ClassroomServiceTest {
 
 		var ordered = org.mockito.Mockito.inOrder(permanentDeleteRepository);
 		ordered.verify(permanentDeleteRepository).deleteExamAnswers(30L);
+		ordered.verify(permanentDeleteRepository).deleteExamAttemptStarts(30L);
 		ordered.verify(permanentDeleteRepository).deleteExamSubmissions(30L);
 		ordered.verify(permanentDeleteRepository).deleteExamQuestions(30L);
 		ordered.verify(permanentDeleteRepository).deleteExams(30L);

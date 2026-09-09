@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 상태 | 논리 설계 초안 |
-| 마지막 갱신 | 2026-08-04 |
+| 마지막 갱신 | 2026-09-09 |
 | DB | MySQL |
 | Migration | Flyway (DEC-003 Accepted) |
 
@@ -13,7 +13,7 @@
 
 | 테이블 | 핵심 컬럼 | 주요 제약/인덱스 |
 | --- | --- | --- |
-| `users` | id, email, password_hash, auth_provider, google_sub(nullable), name, affiliation, avatar_key, learning_email_opt_in, 약관 버전·동의 시각, notification preferences, ai_answer_style, role, status, timestamps | `UK(email)`, `UK(google_sub)`, `IDX(status)`, role·ai_answer_style CHECK |
+| `users` | id, email, password_hash, auth_provider, google_sub(nullable), name, affiliation, avatar_key, learning_email_opt_in, 약관 버전·동의 시각, notification preferences, ai_answer_style, role, status, last_active_at(nullable), timestamps | `UK(email)`, `UK(google_sub)`, `IDX(status)`, `IDX(last_active_at)`, role·ai_answer_style CHECK |
 | `refresh_tokens` | id, user_id, token_hash, expires_at, revoked_at, created_at | `FK(user_id)`, `UK(token_hash)`, `IDX(user_id)` |
 | `learning_materials` | id, owner_id, title, storage_key, page_count, processing_status, failure_reason(nullable), failure_trace_id(nullable), captions_completed_at(nullable), xai_file_id(nullable), xai_file_upload_attempted_at(nullable), status, timestamps | `FK(owner_id)`, `UK(storage_key)`, `IDX(owner_id,status)`, `IDX(status,processing_status,xai_file_id,xai_file_upload_attempted_at,id)`, 상태·실패 사유·page_count CHECK |
 | `material_pages` | id, material_id, page_number, text_content, caption(nullable), created_at | `FK(material_id)`, `UK(material_id,page_number)`, `CHECK(page_number >= 1)` |
@@ -25,12 +25,13 @@
 | `classroom_week_materials` | id, week_id, material_id, added_at, timestamps | `FK(week_id)`, `FK(material_id)`, `UK(week_id,material_id)`, `IDX(material_id)` |
 | `classroom_notices` | id, classroom_id, week_number(nullable), title, content, published_at, publish_at(nullable), notification_sent_at(nullable), timestamps | `FK(classroom_id)`, `IDX(classroom_id,published_at,id)`, 주차 번호 CHECK |
 | `classroom_resource` | id, classroom_id, type, title, week_number(nullable), file metadata(nullable), storage_path(nullable), url(nullable), timestamps | `FK(classroom_id)`, `IDX(classroom_id,week_number,created_at,id)`, 유형·주차·파일 크기·메타데이터 조합 CHECK |
-| `notifications` | id, user_id, type, title, body, link_json, read_at(nullable), created_at | `FK(user_id)`, `IDX(user_id,created_at)`, type CHECK |
+| `notifications` | id, user_id, type, title, body, link_json, read_at(nullable), dedup_key(nullable), created_at | `FK(user_id)`, `IDX(user_id,created_at)`, `UK(dedup_key)`, type CHECK |
 | `user_schedules` | id, user_id, title, starts_at, ends_at, has_time, timestamps | `FK(user_id)`, `IDX(user_id,starts_at)`, `CHECK(ends_at >= starts_at)` |
 | `ai_usage_log` | id, user_id, feature, model(nullable), input/output/reasoning tokens(nullable), success, created_at | FK 없음, `IDX(user_id,created_at)`, `IDX(feature,created_at)` |
-| `exams` | id, classroom_id, week_number(nullable), title, description(nullable), status, allow_retake, total_score, published_at(nullable), closed_at(nullable), timestamps | `FK(classroom_id)`, `IDX(classroom_id,status)`, 상태·총점 CHECK |
+| `exams` | id, classroom_id, week_number(nullable), title, description(nullable), status, allow_retake, total_score, published_at(nullable), closed_at(nullable), due_at(nullable), timestamps | `FK(classroom_id)`, `IDX(classroom_id,status)`, 상태·총점 CHECK |
 | `exam_questions` | id, exam_id, question_no, question_type, points, public_question_json, private_answer_json, schema_version, timestamps | `FK(exam_id)`, `UK(exam_id,question_no)`, 유형·점수 CHECK |
-| `exam_submissions` | id, exam_id, user_id, attempt_no, request_id, status, submitted_at, graded_at(nullable), score(nullable), max_score, normalized_score(nullable), grading_lease_token(nullable), grading_lease_until, grading_retry_count, timestamps | `FK(exam_id)`, `FK(user_id)`, 시도·멱등 UK, 상태·점수·재시도 CHECK, 상태+lease·제출시각 인덱스 |
+| `exam_attempt_starts` | id, exam_id, user_id, started_at | `FK(exam_id)`, `FK(user_id)`, `UK(exam_id,user_id)` |
+| `exam_submissions` | id, exam_id, user_id, attempt_no, request_id, status, started_at(nullable), duration_seconds(nullable), submitted_at, graded_at(nullable), score(nullable), max_score, normalized_score(nullable), grading_lease_token(nullable), grading_lease_until, grading_retry_count, timestamps | `FK(exam_id)`, `FK(user_id)`, 시도·멱등 UK, 상태·점수·소요 시간·재시도 CHECK, 상태+lease·제출시각 인덱스 |
 | `exam_answers` | id, submission_id, question_id, answer(nullable), score(nullable), max_score, verdict(nullable), feedback(nullable), timestamps | `FK(submission_id)`, `FK(question_id)`, `UK(submission_id,question_id)`, 점수·판정 CHECK |
 | `report_criteria` | id, classroom_id, criterion_key, name, description(nullable), rubric_json, allowed_sources_json, min_evidence, weight, version, active, timestamps | `FK(classroom_id)`, `UK(classroom_id,criterion_key,version)`, `IDX(classroom_id,active)`, 최소 근거·weight·version CHECK |
 | `report_generations` | id, classroom_id, student_id, requested_by, request_id, scope_type, week_number(nullable), scope_hash, snapshot_hash(nullable), criterion_catalog_json(nullable), policy_version, source_data_as_of(nullable), status, failure_code(nullable), model(nullable), prompt_version(nullable), generation lease, timestamps | 강의실·학생·요청자 FK, `UK(classroom_id,student_id,request_id)`, status+lease·학생별 상태 인덱스, 범위·주차·상태 CHECK |
@@ -59,6 +60,8 @@
 - V33은 `learning_materials.xai_file_id`를 nullable로 추가합니다. 추출 성공 응답의 non-blank xAI file ID만 내부 저장하며 외부 자료 응답에는 노출하지 않습니다. 자료 소프트 삭제와 계정 탈퇴 시 트랜잭션 커밋 후 내부 파일 삭제 API를 베스트에포트로 호출하고, 실패해도 자료 삭제 결과는 유지합니다.
 - V34는 기존 ACTIVE·READY 자료의 bounded xAI Files 백필을 위해 nullable `xai_file_upload_attempted_at`과 후보 인덱스를 추가합니다. claim 시각을 먼저 커밋해 중복 worker와 hot loop를 막고 기본 6시간 뒤 재시도하며, 업로드 실패는 READY 상태를 변경하지 않습니다.
 - V31은 기존 사용자를 `LOCAL`로 유지하는 `users.auth_provider`와 nullable `google_sub` 및 Google subject 유일 제약을 추가합니다.
+- V37은 nullable `users.last_active_at`과 정렬 인덱스를 추가합니다. 기존 값은 refresh token 생성, 채팅 메시지 생성, 학습 세션 갱신, 시험 제출 시각 중 사용자별 최신 시각으로 한 번 백필하며 근거가 없는 사용자는 null을 유지합니다. 이후 인증된 API 요청과 refresh 성공을 사용자별 5분에 한 번만 짧은 별도 트랜잭션으로 기록합니다.
+- V38은 시험·사용자별 미소비 응시 시작 기록을 위한 `exam_attempt_starts`와 제출의 nullable `started_at`, `duration_seconds`를 추가합니다. 기존 제출은 백필하지 않고 null을 유지하며, 성공한 제출만 같은 트랜잭션에서 시작 기록을 삭제합니다.
 - `material_overviews`는 자료당 최대 1행이며 `PENDING | READY | FAILED` 상태를 사용합니다. `content`와 V29의 `outline_json`은 nullable입니다. READY는 결정적으로 렌더한 Markdown과 AI 구조화 개요를 함께 보존하고, FAILED는 둘 다 null로 유지합니다. `outline_json`에는 nullable `sections[].description`과 `quizCheckpoints[{triggerPage,coverage}]`도 저장하며 구버전 JSON의 필드 부재를 허용합니다. 조회 응답에는 READY의 `content`만 노출하며 `outline_json`은 내부 저장용입니다. 행이 없는 자료는 API에서 PENDING으로 합성합니다. 자료 추출 완료 후 개요를 비동기로 생성하고, 기존 ACTIVE·READY 자료 중 개요 행이 없거나 READY 개요에 `quizCheckpoints`가 없는 자료는 기존 batch 크기 안에서 오래된 순으로 백필합니다. 개요 실패는 `learning_materials` 상태를 변경하지 않습니다.
 - `learning_sessions.conversation_summary`는 완료된 사용자 메시지 8개마다 비동기로 갱신하는 내부 AI 보조 문맥이며 외부 세션 상세 응답에는 노출하지 않습니다. 한 번에 완료 메시지를 오래된 순 최대 20개 처리하고 `last_summarized_message_id`는 실제로 포함한 마지막 메시지 ID를 기록합니다. 요약과 경계 ID는 한 트랜잭션에서 함께 갱신하고, AI 호출 실패 시 둘 다 유지하여 다음 성공 턴 뒤 자연스럽게 재시도합니다. `last_ui_actions_json`, `active_quiz_id`, `pending_diagnosis_id`는 재진입 UI 복원용입니다. `active_quiz_id`와 `pending_diagnosis_id`에는 FK를 추가하지 않습니다. 세션이 하위 퀴즈·진단보다 먼저 생성되는 순환 참조 부담을 피하고 Spring이 생성·제출·진단 소유권과 상태를 검증합니다.
 - `learning_sessions.conversation_reset_at`은 AI 문맥 경계 시각이며 `conversation_reset_count`는 외부 `conversation-{n}` 표기의 순번입니다. 새 대화 시작 시 `conversation_summary`와 `last_summarized_message_id`를 함께 null로 초기화합니다. 이후 내부 턴 스냅샷은 마커보다 늦게 생성된 메시지만 `recentMessages`에 포함하고, 마커 이전 `qaThreadDigest`와 `latestRepair`를 null로 처리합니다. `pendingDiagnosis`, 임시 메모리 후보, 평가, 장기 메모리는 유지하며 메시지 조회 API는 마커와 무관하게 전체 이력을 반환합니다.
@@ -72,7 +75,7 @@
 - 강의실 컬럼 타입은 `name VARCHAR(100)`, `start_date/end_date DATE`, `color VARCHAR(20)`, `description VARCHAR(255) NULL`, `status VARCHAR(20)`, `invite_code VARCHAR(16)`입니다. 주차는 `week_number INT`, `title VARCHAR(100)`, `release_at DATETIME(6) NULL`, `status VARCHAR(20)`, `display_order INT`를 사용하고, 공지는 `week_number INT NULL`, `title VARCHAR(200)`, `content TEXT`, `published_at DATETIME(6)`, `publish_at DATETIME(6) NULL`을 사용합니다. 일반 자료는 `type FILE | LINK`, `title VARCHAR(200)`, `week_number INT NULL`, 원본 파일 메타데이터 또는 `url VARCHAR(2048)`을 유형별로 저장합니다. 공지·일반 자료의 `week_number` 상한은 애플리케이션에서 강의실 `weekCount`로 검증합니다. 참여·요청·연결 시각도 `DATETIME(6)` UTC입니다.
 - 강의실 관련 테이블은 모두 `BIGINT AUTO_INCREMENT` PK와 `created_at`, `updated_at`을 사용합니다. FK에는 자동 cascade를 두지 않고 주차·연결·공지 삭제 순서를 서비스 트랜잭션에서 명시적으로 처리합니다.
 - `ai_usage_log`는 탈퇴 사용자 기록 보존과 AI 호출 경로의 삽입 비용을 위해 `users` FK를 두지 않습니다. `AiFeature`로 정의한 xAI 모델 호출의 성공·실패를 사용자와 feature 기준으로 기록하며, usage가 아직 전파되지 않는 응답은 model·token 컬럼을 null로 남깁니다. 일일 쿼터는 별도 카운터 없이 KST 00:00 이후의 성공·실패 행을 모두 조회합니다.
-- 별도 시험은 강의실에 귀속하고 `week_number`는 nullable 표시·집계 라벨로만 사용합니다. 값이 있으면 `1 <= week_number <= classroom.week_count`를 애플리케이션에서 검증하되 `classroom_weeks` 행의 존재를 요구하지 않습니다. `exams.status`는 `DRAFT | PUBLISHED | CLOSED`, `allow_retake` 기본값은 false입니다.
+- 별도 시험은 강의실에 귀속하고 `week_number`는 nullable 표시·집계 라벨로만 사용합니다. 값이 있으면 `1 <= week_number <= classroom.week_count`를 애플리케이션에서 검증하되 `classroom_weeks` 행의 존재를 요구하지 않습니다. `exams.status`는 `DRAFT | PUBLISHED | CLOSED`, `allow_retake` 기본값은 false입니다. nullable `due_at`은 목록·상세 표시와 알림 기준으로만 사용하며 경과 시 제출 차단이나 자동 상태 전이는 하지 않습니다.
 - DRAFT 시험은 문항 0개와 `total_score=0`을 허용하므로 DB 제약은 `total_score >= 0`입니다. 공개 시 애플리케이션이 문항 1개 이상과 `total_score > 0`을 검증하며, 문항 전체 교체 시 합계를 다시 계산합니다. 공개 이후 문항과 설정은 변경하지 않습니다.
 - `exam_questions`는 `question_no`를 1부터 부여하고 외부 `questionId`를 `q{question_no}`로 파생합니다. 공개 JSON과 정답·모범 답안·rubric이 담긴 비공개 JSON을 분리하며 학생 DTO에는 비공개 JSON을 매핑하지 않습니다. SHORT/ESSAY rubric 키가 없거나 빈 배열이면 grade 호출 시 서버 기본 rubric을 주입합니다.
 - `exam_submissions`는 모든 재응시를 보존합니다. `(exam_id,user_id,attempt_no)`와 `(exam_id,user_id,request_id)`를 각각 UNIQUE로 둡니다. 운영 조회·polling의 최신 제출은 `MAX(attempt_no)`, 성적·리포트 대표 제출은 `MAX(attempt_no WHERE status='GRADED')`로 파생합니다. `GRADING_FAILED` 뒤에도 이전 GRADED 시도가 있으면 이전 점수가 대표값이며, GRADED 시도가 없으면 집계에서 제외합니다. `max_score`는 제출 시점 총점 스냅샷이며 `normalized_score=ROUND(score/max_score*100,2)`는 완전한 채점 후 Spring이 계산합니다.
@@ -83,7 +86,7 @@
 - 기본 평가 기준 9종은 버전 상수를 포함한 코드 카탈로그로 관리합니다. `report_criteria`는 강의실 커스텀 기준 전용이며, 기본 기준을 DB seed로 넣지 않습니다. 기본 9종과 활성 커스텀 기준의 합계 20개 상한 및 정규화 이름 중복은 criterion CRUD 서비스가 검증합니다. 커스텀 기준 삭제는 최신 version ID로만 허용하고 같은 key의 전 version을 물리 삭제합니다. `report_criterion_results`는 기준 key·version을 독립 보존하며 `report_criteria` FK가 없고, 진행 중 generation은 시작 시 동결한 기준 snapshot을 사용합니다.
 - `report_generations`는 비동기 생성 회수를 위해 시험 채점과 같은 token·epoch lease 표현을 사용합니다. 완료 generation당 리포트 1건과 학생·scope 체인별 리포트 version 중복은 UNIQUE로 막고, FAILED generation 승격 금지와 완료 버전 불변성은 서비스 불변식으로 검증합니다.
 - `student_reports.scope_key`는 `FULL` 또는 `WEEK:{weekNumber}`입니다. FULL과 주차별 WEEK는 version·`previous_report_id`·trend 체인을 각각 독립적으로 유지합니다. V25 backfill은 generation의 scope를 사용하되 기존 `previous_report_id`와 trend는 역사적 값으로 보존합니다.
-- `notifications`는 인앱 전용이며 `MATERIAL_UPLOADED | NOTICE_PUBLISHED | JOIN_REQUEST_RECEIVED | JOIN_REQUEST_PROCESSED` 네 유형과 FE 라우팅용 `link_json`을 저장합니다. 타인 알림은 소유권 조회에서 은닉하고 생성 후 30일 초과분은 배치 물리 삭제합니다. 예약 공지는 `classroom_notices.notification_sent_at`을 발송 표식으로 사용하고 수신자 bulk insert와 같은 트랜잭션에서 기록합니다.
+- `notifications`는 인앱 전용이며 기존 4종과 `EXAM_PUBLISHED | EXAM_DEADLINE_APPROACHING | EXAM_GRADED`, FE 라우팅용 `link_json`을 저장합니다. nullable `dedup_key`는 기존 알림에는 null이고 시험 알림에만 사용하며 UNIQUE 제약으로 중복을 막습니다. 타인 알림은 소유권 조회에서 은닉하고 생성 후 30일 초과분은 배치 물리 삭제합니다. 예약 공지는 `classroom_notices.notification_sent_at`을 발송 표식으로 사용하고 수신자 bulk insert와 같은 트랜잭션에서 기록합니다.
 - `report_criterion_results.trend`는 같은 scope 체인의 직전 점수 이력으로 Spring이 결정적으로 계산해 저장하며 AI 요청·응답에는 포함하지 않습니다. `report_questions`는 Phase 3에서 별도 migration으로 추가합니다.
 - `classroom_join_requests`는 사용자×강의실당 한 행입니다. `REJECTED` 재요청은 같은 행을 `PENDING`으로 갱신하고 `requested_at`을 새로 기록하며 `processed_at=NULL`로 되돌립니다.
 - 강의실 자료 업로드 시 `learning_materials` 행과 `classroom_week_materials` 연결은 한 DB 트랜잭션으로 저장합니다. 파일 storage는 DB 트랜잭션에 참여하지 않으므로 DB 실패 시 저장 파일을 보상 삭제합니다.
@@ -94,6 +97,7 @@
 - `users.role`의 기본값은 `LEARNER`입니다. 공개 가입은 애플리케이션 계층에서 `LEARNER | INSTRUCTOR`만 허용하며 `ADMIN`은 예약 역할입니다.
 - `users.auth_provider`는 계정 최초 생성 경로인 `LOCAL | GOOGLE`을 저장합니다. 검증된 이메일과 일치하는 로컬 계정에 Google 로그인을 자동 연결할 때는 `auth_provider=LOCAL`을 유지하고 nullable `google_sub`만 기록합니다. Google 최초 가입은 `password_hash='!oauth:google'` sentinel을 저장해 비밀번호 로그인을 차단합니다. 탈퇴 시 `google_sub=NULL`로 해제해 같은 Google 계정의 재가입을 허용합니다.
 - 계정 환경설정은 필드가 3개이고 사용자와 1:1이므로 별도 테이블 대신 `users` 컬럼으로 저장합니다. 기존 계정에는 `new_material_notification=true`, `study_reminder=true`, `ai_answer_style=NORMAL`을 적용합니다. `avatar_key`는 URL 대신 storage 상대 키를 저장하며 실제 파일은 `avatars/` 하위에 둡니다.
+- `users.last_active_at`은 마지막 인증 API 활동 시각입니다. 추적 실패는 본 요청과 분리하고, Caffeine 5분 스로틀로 같은 사용자의 반복 요청이 매번 DB 쓰기를 만들지 않게 합니다.
 
 ## 2. 컬럼 원칙
 
@@ -124,6 +128,8 @@
 - `exams.total_score >= 0`; 공개 시 애플리케이션에서 `total_score > 0` 검증
 - `exam_questions.question_no >= 1`, `exam_questions.points > 0`
 - `exam_submissions.attempt_no >= 1`, `exam_submissions.max_score > 0`
+- `exam_attempt_starts`는 `(exam_id,user_id)`당 한 행
+- `exam_submissions.duration_seconds IS NULL OR duration_seconds >= 0`
 - `exam_submissions.score IS NULL OR (score >= 0 AND score <= max_score)`
 - `exam_submissions.normalized_score IS NULL OR (normalized_score >= 0 AND normalized_score <= 100)`
 - `exam_answers.score IS NULL OR (score >= 0 AND score <= max_score)`
@@ -162,6 +168,7 @@ MySQL CHECK 제약 지원 버전을 확인하고 DB 제약과 애플리케이션
 
 ## 6. 인덱스 초안
 
+- 관리자 최근 활동 정렬: `users(last_active_at)`
 - 최근 세션: `learning_sessions(user_id, status, updated_at DESC)`
 - 페이지 설명 이력: `session_page_records(session_id, page_number)` UNIQUE 인덱스
 - 채팅 페이지네이션: `chat_messages(session_id, created_at, id)`
@@ -180,6 +187,7 @@ MySQL CHECK 제약 지원 버전을 확인하고 DB 제약과 애플리케이션
 - 강의실 일반 자료: `classroom_resource(classroom_id, week_number, created_at, id)`
 - 내 인앱 알림: `notifications(user_id, created_at)`
 - 강의실 시험 목록: `exams(classroom_id, status, created_at, id)`
+- 시험별 미소비 응시 시작: `exam_attempt_starts(exam_id, user_id)` UNIQUE
 - 학생별 시험 시도: `exam_submissions(exam_id, user_id, attempt_no)` UNIQUE
 - 시험 제출 멱등성: `exam_submissions(exam_id, user_id, request_id)` UNIQUE
 - 시험 채점 회수: `exam_submissions(status, grading_lease_until)`
@@ -215,6 +223,9 @@ MySQL CHECK 제약 지원 버전을 확인하고 DB 제약과 애플리케이션
 - `V26__in_app_notifications.sql`은 사용자 귀속 인앱 알림 테이블과 최신순 인덱스, 예약 공지 1회 생성 표식을 추가합니다. 기존 즉시 게시·이미 도래한 공지는 발송 완료로 backfill하고 미래 예약 공지만 스캔 대상으로 남깁니다.
 - `V32__classroom_resources.sql`은 AI 추출 대상이 아닌 강의실 일반 파일·링크 자료와 유형별 메타데이터 제약, 주차별 최신순 조회 인덱스를 추가합니다. 파일은 `classroom-resources/` storage 하위에 UUID 키로 저장합니다.
 - `V36__ai_usage_log.sql`은 사용자·기능별 AI 호출 감사 로그와 일일 쿼터 COUNT 조회 인덱스를 추가합니다. 탈퇴 후에도 비용 기록을 보존하기 위해 사용자 FK는 추가하지 않습니다.
+- `V37__user_last_active_at.sql`은 사용자 최근 활동 nullable 컬럼과 정렬 인덱스를 추가하고, 기존 활동 테이블의 사용자별 최신 시각으로 1회 백필합니다.
+- `V38__exam_review_timing.sql`은 시험별 미소비 응시 시작 테이블과 제출의 nullable 시작·소요 시간 컬럼 및 non-negative 제약을 추가합니다. 기존 제출은 null을 유지합니다.
+- `V39__exam_due_at_notifications.sql`은 시험의 nullable 마감 표시 시각, 시험 알림 3종 CHECK 확장, nullable dedup 키와 UNIQUE 인덱스를 추가합니다.
 - Epic10 강의실 migration은 구현 착수 시 최신 `origin/develop`의 다음 번호부터 코어(`classrooms`·멤버·참여 요청), 주차·자료, 공지 순서로 새 파일 3개를 추가합니다. 병렬 migration이 먼저 병합되면 rebase 후 번호를 조정하며 기존 migration은 수정하지 않습니다.
 - QA 메시지는 원본 `chat_messages`와 1:1로 연결하며 `qa_messages.chat_message_id`에 UNIQUE를 둡니다.
 - 활성 QA thread 조회는 `qa_threads(session_id, status)`, 문맥 복원은 `qa_messages(qa_thread_id, created_at, id)` 인덱스를 사용합니다.

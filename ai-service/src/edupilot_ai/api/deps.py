@@ -73,7 +73,7 @@ def get_turn_service(
     qa = QaAgent(llm=llm, profile=settings.qa_llm_profile)
     quiz = QuizAgent(llm=llm, profile=settings.quiz_llm_profile)
     repair = RepairAgent(llm=llm, profile=settings.repair_llm_profile)
-    note = NoteAgent(llm=llm, profile=settings.qa_llm_profile)
+    note = NoteAgent(llm=llm, profile=settings.note_llm_profile)
     return TurnService(
         context_builder=ContextBuilder(),
         orchestrator=Orchestrator(llm=llm, profile=settings.orchestrator_llm_profile),

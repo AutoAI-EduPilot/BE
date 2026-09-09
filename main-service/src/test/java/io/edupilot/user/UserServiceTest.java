@@ -43,6 +43,9 @@ class UserServiceTest {
 	@Mock
 	private FileStorage fileStorage;
 
+	@Mock
+	private PasswordChangeAttemptLimiter passwordChangeAttemptLimiter;
+
 	private BCryptPasswordEncoder passwordEncoder;
 	private UserService userService;
 	private User user;
@@ -55,7 +58,8 @@ class UserServiceTest {
 			passwordEncoder,
 			refreshTokenService,
 			List.of(withdrawalHook),
-			fileStorage
+			fileStorage,
+			passwordChangeAttemptLimiter
 		);
 		user = User.create(
 			"user@example.com",
@@ -64,6 +68,63 @@ class UserServiceTest {
 		);
 		ReflectionTestUtils.setField(user, "id", 1L);
 		lenient().when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+	}
+
+	@Test
+	void passwordChangeUpdatesHashRevokesEveryRefreshTokenAndResetsFailures() {
+		var response = userService.changePassword(
+			1L,
+			"password123",
+			"newPassword456"
+		);
+
+		assertThat(passwordEncoder.matches(
+			"newPassword456",
+			user.getPasswordHash()
+		)).isTrue();
+		assertThat(response.reauthenticationRequired()).isTrue();
+		verify(refreshTokenService).revokeAll(1L);
+		verify(passwordChangeAttemptLimiter).reset(1L);
+	}
+
+	@Test
+	void passwordChangeRecordsCurrentPasswordMismatch() {
+		assertBusinessError(
+			() -> userService.changePassword(1L, "wrong", "newPassword456"),
+			ErrorCode.CURRENT_PASSWORD_MISMATCH
+		);
+
+		verify(passwordChangeAttemptLimiter).recordFailure(1L);
+		verify(refreshTokenService, never()).revokeAll(1L);
+	}
+
+	@Test
+	void passwordChangeRejectsGoogleAccountAndPasswordReuse() {
+		User googleUser = User.createGoogle(
+			"google@example.com",
+			"!google-account",
+			"구글 사용자",
+			UserRole.LEARNER,
+			null,
+			false,
+			null,
+			null,
+			null,
+			"google-sub"
+		);
+		ReflectionTestUtils.setField(googleUser, "id", 2L);
+		when(userRepository.findById(2L)).thenReturn(Optional.of(googleUser));
+
+		assertBusinessError(
+			() -> userService.changePassword(2L, "unused", "newPassword456"),
+			ErrorCode.PASSWORD_NOT_SUPPORTED
+		);
+		assertBusinessError(
+			() -> userService.changePassword(1L, "password123", "password123"),
+			ErrorCode.PASSWORD_REUSE_NOT_ALLOWED
+		);
+
+		verify(refreshTokenService, never()).revokeAll(org.mockito.ArgumentMatchers.anyLong());
 	}
 
 	@Test

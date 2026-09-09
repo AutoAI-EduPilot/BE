@@ -43,6 +43,7 @@ import io.edupilot.Epic10ServiceMocks;
 import io.edupilot.auth.JwtTokenProvider;
 import io.edupilot.auth.RefreshTokenRepository;
 import io.edupilot.exam.dto.ExamAnswerResultResponse;
+import io.edupilot.exam.dto.ExamAttemptStartResponse;
 import io.edupilot.exam.dto.ExamOptionResponse;
 import io.edupilot.exam.dto.ExamSubmissionResponse;
 import io.edupilot.exam.dto.ExamSubmissionSummaryResponse;
@@ -50,6 +51,7 @@ import io.edupilot.exam.dto.StudentExamDetailResponse;
 import io.edupilot.exam.dto.StudentExamListItemResponse;
 import io.edupilot.exam.dto.StudentExamListResponse;
 import io.edupilot.exam.dto.StudentExamQuestionResponse;
+import io.edupilot.exam.dto.StudentExamSubmissionResponse;
 import io.edupilot.feedback.FeedbackRepository;
 import io.edupilot.global.error.BusinessException;
 import io.edupilot.global.error.ErrorCode;
@@ -135,7 +137,7 @@ class ExamApiContractTest {
 		when(studentExamService.submit(eq(2L), eq(UserRole.LEARNER), eq(30L), any()))
 			.thenReturn(submitted);
 		when(studentExamService.mySubmission(2L, UserRole.LEARNER, 30L, null))
-			.thenReturn(submitted);
+			.thenReturn(studentSubmission(10L, SubmissionStatus.SUBMITTED, false));
 
 		submit("same-request").andExpect(status().isAccepted());
 		submit("same-request").andExpect(status().isAccepted());
@@ -159,7 +161,7 @@ class ExamApiContractTest {
 			.thenReturn(new StudentExamListResponse(List.of(
 				new StudentExamListItemResponse(
 					30L, "시험", 1, ExamStatus.PUBLISHED, true, true,
-					new BigDecimal("10.00"), summary, NOW, null
+					new BigDecimal("10.00"), summary, NOW.plusSeconds(3_600), NOW, null
 				)
 			), 0, 20, 1, 1));
 		when(studentExamService.detail(2L, UserRole.LEARNER, 30L))
@@ -170,17 +172,22 @@ class ExamApiContractTest {
 					"q1", "문항", new BigDecimal("10.00"), ExamQuestionType.MCQ,
 					List.of(new ExamOptionResponse("a", "선택지"))
 				)),
-				summary, NOW, null
+				summary, NOW.plusSeconds(3_600), NOW, null
 			));
 		when(studentExamService.mySubmission(2L, UserRole.LEARNER, 30L, null))
-			.thenReturn(submission(10L, SubmissionStatus.GRADED));
+			.thenReturn(studentSubmission(10L, SubmissionStatus.GRADED, false));
 
 		MvcResult list = mockMvc.perform(get("/api/classrooms/20/exams")
 				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
-			.andExpect(status().isOk()).andReturn();
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.items[0].dueAt")
+				.value("2026-08-03T01:00:00Z"))
+			.andReturn();
 		MvcResult detail = mockMvc.perform(get("/api/exams/30")
 				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
-			.andExpect(status().isOk()).andReturn();
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.dueAt").value("2026-08-03T01:00:00Z"))
+			.andReturn();
 		MvcResult submission = mockMvc.perform(get("/api/exams/30/submissions/me")
 				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
 			.andExpect(status().isOk()).andReturn();
@@ -188,6 +195,43 @@ class ExamApiContractTest {
 		assertNoPrivateKeys(list);
 		assertNoPrivateKeys(detail);
 		assertNoPrivateKeys(submission);
+	}
+
+	@Test
+	void mySubmissionIncludesReviewAndTimingFieldsOnlyWhenAvailable() throws Exception {
+		when(studentExamService.mySubmission(2L, UserRole.LEARNER, 30L, null))
+			.thenReturn(studentSubmission(10L, SubmissionStatus.GRADED, true));
+
+		MvcResult result = mockMvc.perform(get("/api/exams/30/submissions/me")
+				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.reviewAvailable").value(true))
+			.andExpect(jsonPath("$.data.startedAt").value(NOW.minusSeconds(90).toString()))
+			.andExpect(jsonPath("$.data.durationSeconds").value(90))
+			.andExpect(jsonPath("$.data.items[0].correctAnswer.choiceId").value("a"))
+			.andExpect(jsonPath("$.data.items[0].correctAnswer.text").value("정답"))
+			.andExpect(jsonPath("$.data.items[0].explanation").value("해설"))
+			.andReturn();
+
+		assertThat(data(result).toString())
+			.doesNotContain("rubric")
+			.doesNotContain("privateAnswer")
+			.doesNotContain("answerChoiceId")
+			.doesNotContain("referenceAnswer")
+			.doesNotContain("modelAnswer");
+	}
+
+	@Test
+	void learnerCanStartAttempt() throws Exception {
+		when(studentExamService.startAttempt(2L, UserRole.LEARNER, 30L))
+			.thenReturn(new ExamAttemptStartResponse(NOW));
+
+		mockMvc.perform(post("/api/exams/30/attempts/start")
+				.header(HttpHeaders.AUTHORIZATION, bearer(learnerToken)))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.data.startedAt").value(NOW.toString()));
+
+		verify(studentExamService).startAttempt(2L, UserRole.LEARNER, 30L);
 	}
 
 	@Test
@@ -304,6 +348,10 @@ class ExamApiContractTest {
 			.get("paths")
 			.get("/api/exams/{examId}/submissions/{submissionId}/regrade")
 			.has("post")).isTrue();
+		assertThat(objectMapper.readTree(result.getResponse().getContentAsByteArray())
+			.get("paths")
+			.get("/api/exams/{examId}/attempts/start")
+			.has("post")).isTrue();
 	}
 
 	private org.springframework.test.web.servlet.ResultActions submit(String requestId)
@@ -333,6 +381,39 @@ class ExamApiContractTest {
 				new BigDecimal("10.00"), submitted ? null : Verdict.PARTIAL,
 				submitted ? null : "피드백"
 			))
+		);
+	}
+
+	private StudentExamSubmissionResponse studentSubmission(
+		Long id,
+		SubmissionStatus status,
+		boolean reviewAvailable
+	) {
+		boolean submitted = status == SubmissionStatus.SUBMITTED;
+		StudentExamSubmissionResponse.AnswerItem item = reviewAvailable
+			? new StudentExamSubmissionResponse.ReviewItem(
+				"q1", "답안", new BigDecimal("8.00"), new BigDecimal("10.00"),
+				Verdict.PARTIAL, "피드백",
+				new StudentExamSubmissionResponse.CorrectChoice("a", "정답"), "해설"
+			)
+			: new StudentExamSubmissionResponse.ResultItem(
+				"q1", "답안", submitted ? null : new BigDecimal("8.00"),
+				new BigDecimal("10.00"), submitted ? null : Verdict.PARTIAL,
+				submitted ? null : "피드백"
+			);
+		return new StudentExamSubmissionResponse(
+			id,
+			1,
+			status,
+			reviewAvailable,
+			submitted ? null : new BigDecimal("8.00"),
+			new BigDecimal("10.00"),
+			submitted ? null : new BigDecimal("80.00"),
+			NOW.minusSeconds(90),
+			90,
+			NOW,
+			submitted ? null : NOW.plusSeconds(1),
+			List.of(item)
 		);
 	}
 

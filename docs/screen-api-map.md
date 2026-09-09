@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 상태 | 초안 |
-| 마지막 갱신 | 2026-09-01 |
+| 마지막 갱신 | 2026-09-09 |
 | 대상 | Frontend · Spring Backend |
 
 ## 1. 화면별 매핑
@@ -18,9 +18,10 @@
 | 계정 설정 | 이름·소속 수정 | `PATCH /api/users/me` | 확장 사용자 정보 갱신 | 빈 변경, 길이 오류 |
 | 계정 설정 | 아바타 업로드·교체·삭제 | `POST·GET·DELETE /api/users/me/avatar` | 인증 fetch로 Blob object URL 생성·교체 | 형식/2MiB 초과, 인증 실패 |
 | 계정 설정 | 학습 환경설정 조회·수정 | `GET·PATCH /api/users/me/preferences` | 이메일 수신·학습 리마인더 설정과 AI 답변 스타일 저장 | 빈 변경, enum 오류 |
-| 인앱 알림 | 목록 조회·읽음·삭제 | `GET /api/users/me/notifications`, `PATCH .../{notificationId}/read`, `DELETE .../{notificationId}` | `type`과 `link`로 자료·공지·입장 요청 화면에 라우팅하고 읽음 상태 반영. 예약 공지도 게시 시각 이후 한 번만 표시 | 비인증, 타인·부재 알림 404, 페이지네이션 |
+| 인앱 알림 | 목록 조회·읽음·삭제 | `GET /api/users/me/notifications`, `PATCH .../{notificationId}/read`, `DELETE .../{notificationId}` | `type`과 `link`로 자료·공지·입장 요청·시험 화면에 라우팅하고 읽음 상태 반영. 예약 공지와 시험 알림은 dedup 기준으로 한 번만 표시 | 비인증, 타인·부재 알림 404, 페이지네이션 |
 | 피드백 화면/모달 | 피드백 제출 | `POST /api/feedback` | 접수 ID·시각 확인 후 완료 표시 | 비인증, category·내용 길이 오류 |
-| 관리자 회원 현황 | 목록·검색·역할/상태 필터·상세 조회 | `GET /api/admin/users`, `GET /api/admin/users/{id}` | ACTIVE·DELETED 전체 회원의 비민감 프로필과 가입일 표시 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, 없는 회원 404 |
+| 관리자 회원 현황 | 목록·검색·역할/상태 필터·상세 조회 | `GET /api/admin/users`, `GET /api/admin/users/{id}` | ACTIVE·DELETED 전체 회원의 비민감 프로필·가입일·최근 활동 표시. `lastActiveAt=null`은 `-` 처리하고 가입일/이름/최근 활동 양방향 정렬 지원 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, 없는 회원 404 |
+| 관리자 회원 현황 | 사용자 비밀번호 초기화 | `POST /api/admin/users/{id}/password-reset` | 확인 후 실행하고 `temporaryPassword`를 재조회 불가 안내와 함께 모달에 1회 표시하며 복사 버튼 제공 | 비ADMIN 403, 없는 회원 404, GOOGLE·DELETED·자기 자신 409 |
 | 관리자 강의실 현황 | 목록·정렬·상세 조회 | `GET /api/admin/classrooms`, `GET /api/admin/classrooms/{id}` | 개설자·상태·멤버 수와 상세 멤버 목록 표시 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, 없는 강의실 404 |
 | 관리자 AI 사용량 | 기간별 요약·사용자 상위 N 조회 | `GET /api/admin/ai-usage/summary`, `GET /api/admin/ai-usage/users` | 최근 7일 기본, 최대 92일의 KST 일별·기능별·사용자별 집계 표시 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, 날짜 범위·limit 400 |
 | 관리자 인프라 현황 | 환경·기간별 EC2 지표, AWS 비용, 앱 상태 조회 | `GET /api/admin/infra/metrics`, `GET /api/admin/infra/cost`, `GET /api/admin/infra/app` | CPU·네트워크·메모리·디스크·상태검사 시계열, 월/서비스/일별 비용, JVM·HTTP·DB·AI 상태 표시. AWS 실패 시 unavailable 또는 stale 안내 | 비인증 401, 비ADMIN·DB 강등/탈퇴 403, env·range 400, AWS 장애는 200 fail-soft |
@@ -41,14 +42,15 @@
 | 강의실 일반 자료 | 파일·링크 등록, 전체/주차별 목록, 제목·주차 수정, 파일 열기·다운로드, 삭제 | `GET·POST /api/classrooms/{id}/resources`, `PATCH·DELETE /api/resources/{resourceId}`, `GET .../file` | FILE과 LINK를 구분해 표시하고 이미지·PDF는 inline, 나머지는 attachment로 제공. 일반 자료에는 AI 추출·학습 시작을 연결하지 않음 | 생성·수정·삭제는 소유 강사와 ACTIVE 상태, 조회·다운로드는 승인 멤버, 형식·주차 범위 검증 |
 | 공지 | 목록·즉시/예약 게시·수정·삭제 | `GET·POST /api/classrooms/{id}/notices`, `PATCH·DELETE .../notices/{noticeId}` | 전체/주차 공지를 표시. 강사는 예약 포함 전체, 학습자는 게시 시각이 도래한 공지만 표시 | 강사 권한, 주차 범위, 완료 상태 |
 | 캘린더 | 기간·강의실 필터 조회, 개인 일정 생성·수정·삭제 | `GET·POST /api/users/me/schedule`, `PATCH·DELETE /api/users/me/schedule/{scheduleId}` | 주차 공개·공지·본인 개인 일정을 시간순 표시하고 개인 일정만 편집 | 날짜·시간 범위, 강의실 접근권, 개인 일정 소유권 |
-| 시험 관리 | 시험 생성·목록·상세·수정 | `POST·GET /api/classrooms/{classroomId}/exams`, `GET·PATCH /api/exams/{examId}` | DRAFT 편집기와 전체 상태 목록 표시. rubric 편집기는 기본 접힘·미입력 상태 | 강사 권한, 완료 강의실, DRAFT 편집 상태 |
+| 시험 관리 | 시험 생성·목록·상세·수정 | `POST·GET /api/classrooms/{classroomId}/exams`, `GET·PATCH /api/exams/{examId}` | DRAFT 편집기와 전체 상태 목록 및 nullable `dueAt` 표시. rubric 편집기는 기본 접힘·미입력 상태 | 강사 권한, 완료 강의실, DRAFT 편집 상태, 과거 `dueAt` 입력 |
 | 시험 관리 | 자료 기반 AI 문항 초안 | `POST /api/classrooms/{classroomId}/exams/{examId}/draft-questions` | 보조 버튼으로 초안을 받아 편집기에 채우되 자동 저장하지 않음. `truncated=true`면 30페이지 제한 안내 | 소유 강사, DRAFT 상태, READY 자료, AI 오류 |
 | 시험 관리 | 공개·마감·DRAFT 삭제 | `POST /api/exams/{examId}/publish`, `POST .../close`, `DELETE /api/exams/{examId}` | 상태 배지와 응시 가능 여부 갱신 | `EXAM_NOT_EDITABLE`, `EXAM_NOT_PUBLISHED` |
 | 시험 결과 관리 | 학생별 최신 제출·특정 시도 조회 | `GET /api/exams/{examId}/submissions`, `GET .../submissions/{submissionId}` | 운영 화면은 전체 상태의 최신 attempt를 표시. 성적·리포트 대표값은 최신 GRADED attempt | 시험 소유권, 페이지네이션 |
 | 시험 결과 관리 | 실패 제출 재채점 | `POST /api/exams/{examId}/submissions/{submissionId}/regrade` | `GRADING_FAILED`에만 버튼 노출. 202/SUBMITTED 후 결과 조회로 전환하며 저장 답안을 재사용 | 비소유·부재 404, 상태 충돌 409. executor 포화는 202 후 scheduler 회수 |
-| 시험 응시 | 공개·마감 시험 목록과 상세 조회 | `GET /api/classrooms/{classroomId}/exams`, `GET /api/exams/{examId}` | PUBLISHED는 응시 UI, CLOSED는 읽기 전용 결과 UI | DRAFT는 `EXAM_NOT_FOUND`로 은닉 |
+| 시험 응시 | 공개·마감 시험 목록과 상세 조회 | `GET /api/classrooms/{classroomId}/exams`, `GET /api/exams/{examId}` | PUBLISHED는 응시 UI, CLOSED는 읽기 전용 결과 UI. `dueAt`은 표시용이며 경과 자체로 응시를 막지 않음 | DRAFT는 `EXAM_NOT_FOUND`로 은닉 |
+| 시험 응시 | 응시 화면 진입 | `POST /api/exams/{examId}/attempts/start` | 화면 진입 시 1회 호출하고 반환된 `startedAt`을 표시 기준으로 사용. 새로고침·재진입도 같은 미소비 시각 반환 | 비멤버·강사·DRAFT/CLOSED·완료 강의실 |
 | 시험 응시 | 답안 제출·통신 재시도·재응시 | `POST /api/exams/{examId}/submissions` | 응답 `status`로 분기. 같은 제출 재시도는 같은 `requestId`, 재응시·GRADING_FAILED 재제출은 새 `requestId` | CLOSED, SUBMITTED 중복, 재응시 불가, 답안 형식 오류 |
-| 시험 결과 | 내 최신 또는 지정 시도 조회 | `GET /api/exams/{examId}/submissions/me?attemptNo=` | SUBMITTED는 2초 polling→30초 뒤 5초, terminal에서 중단. 31분부터 지연 안내, 최대 3개 채점 창을 반영해 91분 초과 시 마지막 조회 후 문의 안내 | 접근 권한, 시도 없음 |
+| 시험 결과 | 내 최신 또는 지정 시도 조회 | `GET /api/exams/{examId}/submissions/me?attemptNo=` | `reviewAvailable`로 정답·해설 영역을 토글하고 `durationSeconds=null`은 `-`로 표시. SUBMITTED는 2초 polling→30초 뒤 5초, terminal에서 중단. 31분부터 지연 안내, 최대 3개 채점 창을 반영해 91분 초과 시 마지막 조회 후 문의 안내 | 접근 권한, 시도 없음 |
 | 리포트 학생 선택 `/classrooms/:classroomId/reports` | 수강생 목록·검색·정렬·제외 | `GET·DELETE /api/classrooms/{classroomId}/students[/{studentId}]` | 프로필·가입일·최근 학습 시각·평균 진도·최근 7일 AI 질문 수 표시. 이름 검색과 최근 활동/이름/낮은 진도 정렬 지원 | 강의실 관리 권한, 잘못된 정렬값, 제외된 학생 404 |
 | 학생 리포트 `/classrooms/:classroomId/students/:studentId/reports` | 버전 목록 조회·FULL/WEEK 생성 | `GET·POST /api/classrooms/{classroomId}/students/{studentId}/reports` | 202의 `reportId`를 유지하고 `pollAfterSeconds` 간격으로 상세 polling | 범위·주차 검증, 학생 소속, 강의실 관리 권한 |
 | 리포트 상세 `/reports/:reportId` | 생성 상태·실패 fallback·완료 결과 조회 | `GET /api/reports/{reportId}` | PROCESSING 표시, FAILED 사실 요약, COMPLETED 점수·단계·trend·근거 표시. 근거의 선택 `metrics`는 label/value로 표시하고 필드가 없으면 수치 영역을 숨김. trend는 같은 scope(FULL 또는 같은 주차 WEEK)의 직전 버전 대비이며 null score는 데이터 부족으로 표시 | `REPORT_NOT_FOUND`, AI failureCode |
@@ -56,6 +58,7 @@
 | 리포트 기준 `/classrooms/:classroomId/report-criteria` | AI 평가 지표 생성·상태 polling | `POST /api/classrooms/{classroomId}/report-criteria/generate`, `GET .../generation` | 202 후 `RUNNING`을 polling하고 `COMPLETED`면 목록 갱신, `FAILED`면 message 표시 | READY 개요 1개 이상, 여유 슬롯 3개 이상, 동시 실행 409, 소유권 |
 | 전역 | access 만료(401) 시 | `POST /api/auth/refresh` (credentials 포함) | 새 access로 원요청 재시도 | TOKEN_INVALID → 로그인 이동 |
 | 헤더/메뉴 | 로그아웃 버튼 | `POST /api/auth/logout` | 메모리 access 삭제 후 로그인 화면 | 없음(멱등) |
+| 계정 설정 | 현재·새 비밀번호 입력 후 변경 | `PATCH /api/users/me/password` | 성공 시 `reauthenticationRequired=true`를 확인하고 access 삭제 후 로그인 화면 이동 | GOOGLE 계정·동일 비밀번호 409, 현재 비밀번호 불일치·정책 위반 400, 5회 실패 후 429 |
 | 계정 설정 | 탈퇴 버튼 → 비밀번호 확인 모달 | `DELETE /api/users/me` | 토큰 정리 후 로그인 화면 이동 | 비밀번호 불일치 (DEC-028) |
 | 자료 목록 | 화면 진입/페이지 이동 | `GET /api/materials` | 자료 카드 목록. FAILED는 `failureReason`별 안내, null이면 일반 실패 문구, `traceId`가 있으면 문의 정보로 표시 | 권한, 네트워크 |
 | 자료 업로드 | 파일 제출 | `POST /api/materials` | 처리 상태 표시 후 목록 반영 | 파일 형식/크기/처리 실패 |
@@ -140,7 +143,7 @@ turn 응답의 `state.activeQuizId`는 nullable입니다. 퀴즈 생성 턴에�
 - Orchestrator의 세부 Plan 또는 비공개 reason
 - Grok 프롬프트와 내부 추론
 - 퀴즈 제출 전 정답·루브릭
-- 별도 시험의 정답·해설·모범 답안·rubric은 DEC-031 D4 확정 전까지 제출 후에도 비노출
+- 별도 시험의 rubric과 비공개 정답 원본. 본인 결과 API의 `reviewAvailable=true`일 때 제공되는 명시적 `correctAnswer`, `explanation`만 사용
 - 장기 메모리 승격 내부 점수/근거 원문
 
 ## 5. 공동 합의 필요
@@ -151,7 +154,6 @@ turn 응답의 `state.activeQuizId`는 nullable입니다. 퀴즈 생성 턴에�
 - SSE 이벤트 schema와 heartbeat·취소·`Last-Event-ID` 재연결 (인증은 fetch 스트림 + Authorization 헤더로 확정 — DEC-021)
 - 처리 중 PDF와 AI 장시간 작업 표시
 - 통합 학습 퀴즈 재제출 정책
-- 별도 시험 정답·해설 공개 시점(현재 임시 비공개)
 - 오류별 사용자 문구와 재시도 버튼 정책
 - 타 사용자 아바타가 필요한 Epic 10 강의실 범위에서 공개 또는 사용자 ID 기반 아바타 endpoint 검토
 - 강의실 색상은 `BLUE | GREEN | PURPLE | ORANGE | RED | GRAY`와 DEC-030의 고정 hex 매핑을 사용
